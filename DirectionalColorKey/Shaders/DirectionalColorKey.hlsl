@@ -1,4 +1,5 @@
 Texture2D InputTexture : register(t0);
+Texture2D ForegroundTexture : register(t1);
 SamplerState InputSampler : register(s0);
 
 cbuffer constants : register(b0)
@@ -66,7 +67,8 @@ float3 OklabToLinear(float3 lab)
 float4 main(
     float4 pos : SV_POSITION,
     float4 posScene : SCENE_POSITION,
-    float4 uv0 : TEXCOORD0
+    float4 uv0 : TEXCOORD0,
+    float4 uv1 : TEXCOORD1
 ) : SV_Target
 {
     float4 src = InputTexture.Sample(InputSampler, uv0.xy);
@@ -79,6 +81,8 @@ float4 main(
     float3 colorLinear = SrgbToLinear(straightSrgb);
     float3 colorLab = LinearToOklab(colorLinear);
 
+    float3 backgroundLinear = max(OklabToLinear(backgroundLab), 0.0f);
+
     float3 d = colorLab - backgroundLab;
     float dLen = length(d);
     float halfThreshold = noiseThreshold * 0.5f;
@@ -89,27 +93,83 @@ float4 main(
 
     float noiseConfidence = smoothstep(halfThreshold, noiseThreshold, dLen);
 
-    int bestCluster = 0;
-    float bestProj = -1e9f;
+    float3 backgroundShareRatio = (backgroundLinear > 1e-4f) ? (colorLinear / max(backgroundLinear, 1e-5f)) : 1e9f;
+    float backgroundShare = saturate(min(backgroundShareRatio.x, min(backgroundShareRatio.y, backgroundShareRatio.z)));
+    float3 foregroundResidual = colorLinear - backgroundShare * backgroundLinear;
+    float chromaConfidence = smoothstep(halfThreshold, noiseThreshold, length(foregroundResidual) / max(length(colorLinear), 1e-5f));
 
-    [loop]
-    for (int c = 0; c < clusterCount; c++)
+    float alpha = 0.0f;
+    float3 foregroundLinear = colorLinear;
+    bool resolved = false;
+
+    float4 foregroundSample = ForegroundTexture.Sample(InputSampler, uv1.xy);
+
+    [branch]
+    if (foregroundSample.a > 0.5f)
     {
-        float proj = dot(d, clusters[c].xyz);
-        if (proj > bestProj)
+        float3 seedSrgb = saturate(foregroundSample.rgb / max(foregroundSample.a, 1e-3f));
+        float3 seedLinear = SrgbToLinear(seedSrgb);
+        float3 fb = seedLinear - backgroundLinear;
+        float denom = dot(fb, fb);
+
+        [branch]
+        if (denom > 1e-6f)
         {
-            bestProj = proj;
-            bestCluster = c;
+            float seedAlpha = saturate(dot(colorLinear - backgroundLinear, fb) / denom);
+            float3 residual = (colorLinear - backgroundLinear) - seedAlpha * fb;
+
+            [branch]
+            if (dot(residual, residual) <= 0.0625f * denom)
+            {
+                alpha = seedAlpha;
+                foregroundLinear = seedLinear;
+                resolved = true;
+            }
         }
     }
 
     [branch]
-    if (bestProj <= 0.0f)
-        return float4(0.0f, 0.0f, 0.0f, 0.0f);
+    if (!resolved)
+    {
+        int bestCluster = 0;
+        float bestProj = -1e9f;
 
-    float lambda = max(clusters[bestCluster].w, 1e-5f);
+        [loop]
+        for (int c = 0; c < clusterCount; c++)
+        {
+            float proj = dot(d, clusters[c].xyz);
+            if (proj > bestProj)
+            {
+                bestProj = proj;
+                bestCluster = c;
+            }
+        }
 
-    float alpha = saturate(bestProj / lambda);
+        [branch]
+        if (bestProj <= 0.0f)
+            return float4(0.0f, 0.0f, 0.0f, 0.0f);
+
+        float lambda = max(clusters[bestCluster].w, 1e-5f);
+        float directionalAlpha = saturate(bestProj / lambda);
+
+        float3 luma = float3(0.2126f, 0.7152f, 0.0722f);
+        float3 backgroundChroma = backgroundLinear - dot(backgroundLinear, luma);
+        float backgroundChromaLenSq = dot(backgroundChroma, backgroundChroma);
+
+        float neutralAlpha = directionalAlpha;
+
+        [branch]
+        if (backgroundChromaLenSq > 1e-8f)
+        {
+            float3 colorChroma = colorLinear - dot(colorLinear, luma);
+            float t = dot(colorChroma, backgroundChroma) / backgroundChromaLenSq;
+            neutralAlpha = saturate(1.0f - t);
+        }
+
+        alpha = max(directionalAlpha, neutralAlpha);
+        foregroundLinear = saturate((colorLinear - (1.0f - alpha) * backgroundLinear) / max(alpha, 1e-3f));
+    }
+
     alpha = saturate((alpha - edgeSoftness) / max(1.0f - edgeSoftness, 1e-5f));
 
     [branch]
@@ -119,23 +179,22 @@ float4 main(
     [branch]
     if (outputForeground < 0.5f)
     {
-        float maskAlpha = alpha * noiseConfidence * src.a;
+        float maskAlpha = alpha * noiseConfidence * chromaConfidence * src.a;
         return float4(maskAlpha, maskAlpha, maskAlpha, maskAlpha);
     }
-
-    float3 foregroundLab = (colorLab - (1.0f - alpha) * backgroundLab) / max(alpha, 1e-3f);
 
     [branch]
     if (spillStrength > 0.0f && length(backgroundChromaDir.yz) > 1e-5f)
     {
+        float3 foregroundLab = LinearToOklab(foregroundLinear);
         float2 chromaDir = normalize(backgroundChromaDir.yz);
         float spill = dot(foregroundLab.yz, chromaDir) - despillBias;
         spill = max(0.0f, spill) * spillStrength;
         foregroundLab.yz -= chromaDir * spill;
+        foregroundLinear = max(OklabToLinear(foregroundLab), 0.0f);
     }
 
-    float3 foregroundLinear = max(OklabToLinear(foregroundLab), 0.0f);
     float3 foregroundSrgb = saturate(LinearToSrgb(foregroundLinear));
-    float outAlpha = alpha * noiseConfidence * src.a;
+    float outAlpha = alpha * noiseConfidence * chromaConfidence * src.a;
     return float4(foregroundSrgb * outAlpha, outAlpha);
 }

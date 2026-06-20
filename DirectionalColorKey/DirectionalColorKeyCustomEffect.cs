@@ -71,7 +71,7 @@ namespace DirectionalColorKey
             set => SetValue((int)EffectImpl.Properties.ClusterCount, value);
         }
 
-        [CustomEffect(1)]
+        [CustomEffect(2)]
         private sealed class EffectImpl : D2D1CustomShaderEffectImplBase<EffectImpl>
         {
             private ConstantBuffer _cb;
@@ -125,8 +125,8 @@ namespace DirectionalColorKey
 
             public override void MapOutputRectToInputRects(RawRect outputRect, RawRect[] inputRects)
             {
-                if (inputRects.Length > 0)
-                    inputRects[0] = outputRect;
+                for (int i = 0; i < inputRects.Length; i++)
+                    inputRects[i] = outputRect;
             }
 
             [StructLayout(LayoutKind.Sequential)]

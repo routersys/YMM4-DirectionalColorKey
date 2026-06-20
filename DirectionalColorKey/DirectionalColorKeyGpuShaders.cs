@@ -797,3 +797,219 @@ internal readonly partial struct ProjectionHistogramShader(
         Hlsl.InterlockedAdd(ref histogram[best * binsPerCluster + bin], 1);
     }
 }
+
+[ThreadGroupSize(DefaultThreadGroupSizes.XY)]
+[GeneratedComputeShaderDescriptor]
+internal readonly partial struct ForegroundSeedShader(
+    ReadOnlyBuffer<int> bgra,
+    ReadWriteBuffer<float> colorLab,
+    ReadWriteBuffer<int> foreground,
+    ReadWriteBuffer<int> valid,
+    float backgroundL,
+    float backgroundA,
+    float backgroundB,
+    float referencePerp,
+    int width,
+    int height) : IComputeShader
+{
+    private readonly ReadOnlyBuffer<int> bgra = bgra;
+    private readonly ReadWriteBuffer<float> colorLab = colorLab;
+    private readonly ReadWriteBuffer<int> foreground = foreground;
+    private readonly ReadWriteBuffer<int> valid = valid;
+    private readonly float backgroundL = backgroundL;
+    private readonly float backgroundA = backgroundA;
+    private readonly float backgroundB = backgroundB;
+    private readonly float referencePerp = referencePerp;
+    private readonly int width = width;
+    private readonly int height = height;
+
+    public void Execute()
+    {
+        int x = ThreadIds.X;
+        int y = ThreadIds.Y;
+        if (x >= width || y >= height)
+            return;
+
+        int index = y * width + x;
+        int triple = index * 3;
+
+        int packed = bgra[index];
+        int a = (packed >> 24) & 0xFF;
+
+        if (a == 0)
+        {
+            foreground[index] = 0;
+            valid[index] = 0;
+            return;
+        }
+
+        float bgLenSq = backgroundL * backgroundL + backgroundA * backgroundA + backgroundB * backgroundB;
+
+        if (bgLenSq <= 1e-8f || referencePerp <= 1e-5f)
+        {
+            foreground[index] = 0;
+            valid[index] = 0;
+            return;
+        }
+
+        float labL = colorLab[triple + 0];
+        float labA = colorLab[triple + 1];
+        float labB = colorLab[triple + 2];
+
+        float along = (labL * backgroundL + labA * backgroundA + labB * backgroundB) / bgLenSq;
+        float pl = labL - along * backgroundL;
+        float pa = labA - along * backgroundA;
+        float pb = labB - along * backgroundB;
+        float perp = Hlsl.Sqrt(pl * pl + pa * pa + pb * pb);
+
+        if (perp < referencePerp)
+        {
+            foreground[index] = 0;
+            valid[index] = 0;
+            return;
+        }
+
+        float invA = 1f / a;
+        float bSrgb = Hlsl.Saturate(((packed >> 0) & 0xFF) * invA);
+        float gSrgb = Hlsl.Saturate(((packed >> 8) & 0xFF) * invA);
+        float rSrgb = Hlsl.Saturate(((packed >> 16) & 0xFF) * invA);
+
+        int rByte = (int)(rSrgb * 255f + 0.5f);
+        int gByte = (int)(gSrgb * 255f + 0.5f);
+        int bByte = (int)(bSrgb * 255f + 0.5f);
+
+        foreground[index] = (0xFF << 24) | (rByte << 16) | (gByte << 8) | bByte;
+        valid[index] = 1;
+    }
+}
+
+[ThreadGroupSize(DefaultThreadGroupSizes.XY)]
+[GeneratedComputeShaderDescriptor]
+internal readonly partial struct ForegroundPropagateShader(
+    ReadWriteBuffer<int> sourceForeground,
+    ReadWriteBuffer<int> sourceValid,
+    ReadOnlyBuffer<int> bgra,
+    ReadWriteBuffer<int> targetForeground,
+    ReadWriteBuffer<int> targetValid,
+    float backgroundR,
+    float backgroundG,
+    float backgroundB,
+    int reach,
+    float sigmaLineSq,
+    int width,
+    int height) : IComputeShader
+{
+    private readonly ReadWriteBuffer<int> sourceForeground = sourceForeground;
+    private readonly ReadWriteBuffer<int> sourceValid = sourceValid;
+    private readonly ReadOnlyBuffer<int> bgra = bgra;
+    private readonly ReadWriteBuffer<int> targetForeground = targetForeground;
+    private readonly ReadWriteBuffer<int> targetValid = targetValid;
+    private readonly float backgroundR = backgroundR;
+    private readonly float backgroundG = backgroundG;
+    private readonly float backgroundB = backgroundB;
+    private readonly int reach = reach;
+    private readonly float sigmaLineSq = sigmaLineSq;
+    private readonly int width = width;
+    private readonly int height = height;
+
+    public void Execute()
+    {
+        int x = ThreadIds.X;
+        int y = ThreadIds.Y;
+        if (x >= width || y >= height)
+            return;
+
+        int index = y * width + x;
+
+        int packed = bgra[index];
+        int a = (packed >> 24) & 0xFF;
+
+        if (a == 0)
+        {
+            targetForeground[index] = 0;
+            targetValid[index] = 0;
+            return;
+        }
+
+        float bgRl = backgroundR <= 0.04045f ? backgroundR / 12.92f : Hlsl.Pow((backgroundR + 0.055f) / 1.055f, 2.4f);
+        float bgGl = backgroundG <= 0.04045f ? backgroundG / 12.92f : Hlsl.Pow((backgroundG + 0.055f) / 1.055f, 2.4f);
+        float bgBl = backgroundB <= 0.04045f ? backgroundB / 12.92f : Hlsl.Pow((backgroundB + 0.055f) / 1.055f, 2.4f);
+        float bgLenSq = bgRl * bgRl + bgGl * bgGl + bgBl * bgBl;
+
+        float invA = 1f / a;
+        float observedRs = Hlsl.Saturate(((packed >> 16) & 0xFF) * invA);
+        float observedGs = Hlsl.Saturate(((packed >> 8) & 0xFF) * invA);
+        float observedBs = Hlsl.Saturate(((packed >> 0) & 0xFF) * invA);
+
+        float observedR = observedRs <= 0.04045f ? observedRs / 12.92f : Hlsl.Pow((observedRs + 0.055f) / 1.055f, 2.4f);
+        float observedG = observedGs <= 0.04045f ? observedGs / 12.92f : Hlsl.Pow((observedGs + 0.055f) / 1.055f, 2.4f);
+        float observedB = observedBs <= 0.04045f ? observedBs / 12.92f : Hlsl.Pow((observedBs + 0.055f) / 1.055f, 2.4f);
+
+        float obr = observedR - bgRl;
+        float obg = observedG - bgGl;
+        float obb = observedB - bgBl;
+
+        int bestForeground = 0;
+        float bestPurity = -1f;
+
+        for (int dy = -reach; dy <= reach; dy++)
+        {
+            int sy = y + dy;
+            if (sy < 0 || sy >= height)
+                continue;
+
+            for (int dx = -reach; dx <= reach; dx++)
+            {
+                int sx = x + dx;
+                if (sx < 0 || sx >= width)
+                    continue;
+
+                int sIndex = sy * width + sx;
+                if (sourceValid[sIndex] == 0)
+                    continue;
+
+                int f = sourceForeground[sIndex];
+                float frs = ((f >> 16) & 0xFF) * (1f / 255f);
+                float fgs = ((f >> 8) & 0xFF) * (1f / 255f);
+                float fbs = ((f >> 0) & 0xFF) * (1f / 255f);
+
+                float fr = frs <= 0.04045f ? frs / 12.92f : Hlsl.Pow((frs + 0.055f) / 1.055f, 2.4f);
+                float fg = fgs <= 0.04045f ? fgs / 12.92f : Hlsl.Pow((fgs + 0.055f) / 1.055f, 2.4f);
+                float fb = fbs <= 0.04045f ? fbs / 12.92f : Hlsl.Pow((fbs + 0.055f) / 1.055f, 2.4f);
+
+                float dr = fr - bgRl;
+                float dg = fg - bgGl;
+                float db = fb - bgBl;
+                float dlen2 = dr * dr + dg * dg + db * db;
+                if (dlen2 < 1e-8f)
+                    continue;
+
+                float t = (obr * dr + obg * dg + obb * db) / dlen2;
+                float pr = obr - t * dr;
+                float pg = obg - t * dg;
+                float pb = obb - t * db;
+                float distSq = pr * pr + pg * pg + pb * pb;
+                if (distSq > sigmaLineSq * dlen2)
+                    continue;
+
+                float dotFB = fr * bgRl + fg * bgGl + fb * bgBl;
+                float purity = fr * fr + fg * fg + fb * fb - (bgLenSq > 1e-8f ? dotFB * dotFB / bgLenSq : 0f);
+                if (purity > bestPurity)
+                {
+                    bestPurity = purity;
+                    bestForeground = f;
+                }
+            }
+        }
+
+        if (bestPurity >= 0f)
+        {
+            targetForeground[index] = bestForeground;
+            targetValid[index] = 1;
+            return;
+        }
+
+        targetForeground[index] = 0;
+        targetValid[index] = 0;
+    }
+}
