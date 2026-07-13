@@ -67,9 +67,21 @@ namespace DirectionalColorKey
         private int lastBackgroundLabYBits;
         private int lastBackgroundLabZBits;
 
-        public DirectionalColorKeyAnalyzer()
+        private DirectionalColorKeyAnalyzer(GraphicsDevice device)
         {
-            device = GraphicsDevice.GetDefault();
+            this.device = device;
+        }
+
+        public static DirectionalColorKeyAnalyzer? TryCreate()
+        {
+            try
+            {
+                return new DirectionalColorKeyAnalyzer(GraphicsDevice.GetDefault());
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         public int ClusterCount => clusterCount;
