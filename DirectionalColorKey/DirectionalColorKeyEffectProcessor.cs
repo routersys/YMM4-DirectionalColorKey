@@ -135,6 +135,17 @@ namespace DirectionalColorKey
 				|| sigmaColor != currentSigmaColor
 				|| opaquePercentile != currentOpaquePercentile;
 
+			bool lambdaInputsChanged = isFirst
+				|| !hasAnalysisCache
+				|| !lastBounds.Equals(bounds)
+				|| backgroundColor != currentBackground
+				|| foregroundColor != currentForeground
+				|| scaleMode != currentScaleMode
+				|| clusterCount != currentClusterCount
+				|| noiseThreshold != currentNoiseThreshold
+				|| sigmaColor != currentSigmaColor
+				|| opaquePercentile != currentOpaquePercentile;
+
 			if (analysisDirty)
 			{
 				var whiteDirection = ComputeWhiteDirection(backgroundLab);
@@ -152,7 +163,8 @@ namespace DirectionalColorKey
 					currentScaleMode,
 					(float)currentOpaquePercentile,
 					foregroundLambda,
-					(keyDirection, floorValue) => ComputePhysicalLambda(backgroundLab, keyDirection, floorValue));
+					(keyDirection, floorValue) => ComputePhysicalLambda(backgroundLab, keyDirection, floorValue),
+					lambdaInputsChanged);
 
 				ApplyClusters(backgroundLab);
 

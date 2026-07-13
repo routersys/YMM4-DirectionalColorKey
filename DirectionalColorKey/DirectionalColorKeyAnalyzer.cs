@@ -91,9 +91,13 @@ namespace DirectionalColorKey
             DirectionalColorKeyScaleMode scaleMode,
             float opaquePercentile,
             float foregroundLambda,
-            Func<Vector3, float, float> physicalLambda)
+            Func<Vector3, float, float> physicalLambda,
+            bool resetLambdaSmoothing)
         {
             EnsureCapacity(width, height);
+
+            if (resetLambdaSmoothing)
+                hasLambdaWarmStart = false;
 
             int targetClusters = Math.Clamp(requestedClusters, 1, MaxClusters);
             int noiseThresholdBits = BitConverter.SingleToInt32Bits(noiseThreshold);
