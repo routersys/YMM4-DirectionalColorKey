@@ -8,6 +8,13 @@ using PixelFormat = Vortice.DCommon.PixelFormat;
 
 namespace DirectionalColorKey
 {
+    internal sealed class ActionDisposer(Action action) : IDisposable
+    {
+        private readonly Action action = action;
+
+        public void Dispose() => action();
+    }
+
     internal sealed class DirectionalColorKeyQueueScheduler : ComputeExternalQueueScheduler
     {
         private int entered;

@@ -1012,3 +1012,64 @@ internal readonly partial struct ForegroundPropagateShader(
         targetValid[index] = 0;
     }
 }
+
+[ThreadGroupSize(DefaultThreadGroupSizes.XY)]
+[GeneratedComputeShaderDescriptor]
+internal readonly partial struct SharedTextureToBufferShader(
+    IReadWriteNormalizedTexture2D<float4> source,
+    ReadWriteBuffer<int> bgra,
+    int width,
+    int height) : IComputeShader
+{
+    private readonly IReadWriteNormalizedTexture2D<float4> source = source;
+    private readonly ReadWriteBuffer<int> bgra = bgra;
+    private readonly int width = width;
+    private readonly int height = height;
+
+    public void Execute()
+    {
+        int x = ThreadIds.X;
+        int y = ThreadIds.Y;
+        if (x >= width || y >= height)
+            return;
+
+        float4 value = source[x, y];
+
+        int b = (int)(Hlsl.Saturate(value.Z) * 255f + 0.5f);
+        int g = (int)(Hlsl.Saturate(value.Y) * 255f + 0.5f);
+        int r = (int)(Hlsl.Saturate(value.X) * 255f + 0.5f);
+        int a = (int)(Hlsl.Saturate(value.W) * 255f + 0.5f);
+
+        bgra[y * width + x] = (a << 24) | (r << 16) | (g << 8) | b;
+    }
+}
+
+[ThreadGroupSize(DefaultThreadGroupSizes.XY)]
+[GeneratedComputeShaderDescriptor]
+internal readonly partial struct BufferToSharedTextureShader(
+    ReadWriteBuffer<int> bgra,
+    IReadWriteNormalizedTexture2D<float4> destination,
+    int width,
+    int height) : IComputeShader
+{
+    private readonly ReadWriteBuffer<int> bgra = bgra;
+    private readonly IReadWriteNormalizedTexture2D<float4> destination = destination;
+    private readonly int width = width;
+    private readonly int height = height;
+
+    public void Execute()
+    {
+        int x = ThreadIds.X;
+        int y = ThreadIds.Y;
+        if (x >= width || y >= height)
+            return;
+
+        int packed = bgra[y * width + x];
+
+        destination[x, y] = new float4(
+            ((packed >> 16) & 0xFF) / 255f,
+            ((packed >> 8) & 0xFF) / 255f,
+            ((packed >> 0) & 0xFF) / 255f,
+            ((packed >> 24) & 0xFF) / 255f);
+    }
+}

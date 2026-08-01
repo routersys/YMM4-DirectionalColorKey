@@ -7,6 +7,7 @@ namespace DirectionalColorKey
         private readonly GraphicsDevice device;
 
         private ReadOnlyBuffer<int>? bgraBuffer;
+        private ReadWriteBuffer<int>? bridgeBuffer;
         private ReadWriteBuffer<int>? previousBgraBuffer;
         private ReadWriteBuffer<float>? colorLabBuffer;
         private ReadWriteBuffer<float>? directionBufferA;
@@ -83,12 +84,52 @@ namespace DirectionalColorKey
             }
         }
 
+        public static DirectionalColorKeyAnalyzer? TryCreate(GraphicsDevice device)
+        {
+            try
+            {
+                return new DirectionalColorKeyAnalyzer(device);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
         public int ClusterCount => clusterCount;
 
         public Vector3 GetCenter(int cluster)
             => new(centers[cluster * 3 + 0], centers[cluster * 3 + 1], centers[cluster * 3 + 2]);
 
         public float GetLambda(int cluster) => lambdas[cluster];
+
+        public void CaptureSource(ReadWriteTexture2D<Bgra32, Float4> source, int width, int height)
+        {
+            EnsureCapacity(width, height);
+
+            var bridge = EnsureBridgeBuffer();
+
+            device.For(width, height, new SharedTextureToBufferShader(source, bridge, width, height));
+
+            EnsureBgraBuffer().CopyFrom(bridge, 0, 0, pixelCount);
+        }
+
+        public void WriteForegroundField(ReadWriteTexture2D<Bgra32, Float4> destination, int width, int height, Vector3 backgroundLab, Vector3 backgroundSrgb)
+        {
+            var foregroundSource = BuildForegroundFieldOnGpu(width, height, backgroundLab, backgroundSrgb);
+
+            device.For(width, height, new BufferToSharedTextureShader(foregroundSource, destination, width, height));
+        }
+
+        private ReadWriteBuffer<int> EnsureBridgeBuffer()
+        {
+            if (bridgeBuffer is null || bridgeBuffer.Length < pixelCount)
+            {
+                bridgeBuffer?.Dispose();
+                bridgeBuffer = device.AllocateReadWriteBuffer<int>(pixelCount);
+            }
+            return bridgeBuffer;
+        }
 
         public void Analyze(
             ReadOnlySpan<int> bgra,
@@ -122,7 +163,8 @@ namespace DirectionalColorKey
             var directionGpu = EnsureDirectionBufferA();
             var directionScratch = EnsureDirectionBufferB();
 
-            bgraGpu.CopyFrom(bgra[..pixelCount]);
+            if (!bgra.IsEmpty)
+                bgraGpu.CopyFrom(bgra[..pixelCount]);
 
             device.For(width, height, new DisplacementFieldShader(
                 bgraGpu, colorLabGpu, directionGpu,
@@ -203,11 +245,19 @@ namespace DirectionalColorKey
 
         public ReadOnlySpan<int> BuildForegroundField(int width, int height, Vector3 backgroundLab, Vector3 backgroundSrgb)
         {
-            EnsureCapacity(width, height);
+            var foregroundSource = BuildForegroundFieldOnGpu(width, height, backgroundLab, backgroundSrgb);
 
             foregroundReadback ??= new int[pixelCount];
             if (foregroundReadback.Length < pixelCount)
                 foregroundReadback = new int[pixelCount];
+
+            foregroundSource.CopyTo(foregroundReadback.AsSpan(0, pixelCount));
+            return foregroundReadback.AsSpan(0, pixelCount);
+        }
+
+        private ReadWriteBuffer<int> BuildForegroundFieldOnGpu(int width, int height, Vector3 backgroundLab, Vector3 backgroundSrgb)
+        {
+            EnsureCapacity(width, height);
 
             float referencePerp = ComputeReferencePerp(backgroundLab);
 
@@ -235,8 +285,7 @@ namespace DirectionalColorKey
                 (validSource, validTarget) = (validTarget, validSource);
             }
 
-            foregroundSource.CopyTo(foregroundReadback.AsSpan(0, pixelCount));
-            return foregroundReadback.AsSpan(0, pixelCount);
+            return foregroundSource;
         }
 
         private static float ComputeReferencePerp(Vector3 backgroundLab)
@@ -516,6 +565,7 @@ namespace DirectionalColorKey
             if (bgraBuffer is null || bgraBuffer.Length < pixelCount)
             {
                 bgraBuffer?.Dispose();
+            bridgeBuffer?.Dispose();
                 bgraBuffer = device.AllocateReadOnlyBuffer<int>(pixelCount);
             }
             return bgraBuffer;
