@@ -1,5 +1,4 @@
 using System.Numerics;
-using ComputeSharp;
 
 namespace DirectionalColorKey
 {

@@ -46,6 +46,10 @@
 			<HintPath>$(YMM4DirPath)Vortice.Direct3D11.dll</HintPath>
 			<Private>false</Private>
 		</Reference>
+		<Reference Include="Vortice.DXGI">
+			<HintPath>$(YMM4DirPath)Vortice.DXGI.dll</HintPath>
+			<Private>false</Private>
+		</Reference>
 		<Reference Include="Vortice.DirectX">
 			<HintPath>$(YMM4DirPath)Vortice.DirectX.dll</HintPath>
 			<Private>false</Private>
@@ -73,8 +77,18 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="ComputeSharp" Version="3.2.0" />
+		<PackageReference Include="ComputeWeave" Version="1.0.2" />
 		<PackageReference Include="Microsoft.Xaml.Behaviors.Wpf" Version="1.1.142" />
+		<Using Include="ComputeWeave" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+			<_Parameter1>DirectionalColorKey.Harness</_Parameter1>
+		</AssemblyAttribute>
+		<AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+			<_Parameter1>DirectionalColorKey.Tests</_Parameter1>
+		</AssemblyAttribute>
 	</ItemGroup>
 
 	<ItemGroup>

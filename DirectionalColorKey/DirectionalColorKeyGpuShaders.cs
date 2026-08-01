@@ -1,4 +1,3 @@
-using ComputeSharp;
 
 namespace DirectionalColorKey;
 
