@@ -22,7 +22,7 @@ internal static class DirectionFieldConstants
 [ThreadGroupSize(DefaultThreadGroupSizes.XY)]
 [GeneratedComputeShaderDescriptor]
 internal readonly partial struct DisplacementFieldShader(
-    ReadOnlyBuffer<int> bgra,
+    IReadOnlyBuffer<int> bgra,
     ReadWriteBuffer<float> colorLab,
     ReadWriteBuffer<float> directions,
     float backgroundL,
@@ -32,7 +32,7 @@ internal readonly partial struct DisplacementFieldShader(
     int width,
     int height) : IComputeShader
 {
-    private readonly ReadOnlyBuffer<int> bgra = bgra;
+    private readonly IReadOnlyBuffer<int> bgra = bgra;
     private readonly ReadWriteBuffer<float> colorLab = colorLab;
     private readonly ReadWriteBuffer<float> directions = directions;
     private readonly float backgroundL = backgroundL;
@@ -282,13 +282,13 @@ internal readonly partial struct DirectionSmoothShader(
 [ThreadGroupSize(DefaultThreadGroupSizes.XY)]
 [GeneratedComputeShaderDescriptor]
 internal readonly partial struct ChangeSeedShader(
-    ReadOnlyBuffer<int> bgra,
+    IReadOnlyBuffer<int> bgra,
     ReadWriteBuffer<int> previousBgra,
     ReadWriteBuffer<int> seedMask,
     int width,
     int height) : IComputeShader
 {
-    private readonly ReadOnlyBuffer<int> bgra = bgra;
+    private readonly IReadOnlyBuffer<int> bgra = bgra;
     private readonly ReadWriteBuffer<int> previousBgra = previousBgra;
     private readonly ReadWriteBuffer<int> seedMask = seedMask;
     private readonly int width = width;
@@ -624,6 +624,31 @@ internal readonly partial struct CopyDirectionsShader(
 
 [ThreadGroupSize(DefaultThreadGroupSizes.XY)]
 [GeneratedComputeShaderDescriptor]
+internal readonly partial struct CopyPackedShader(
+    IReadOnlyBuffer<int> source,
+    ReadWriteBuffer<int> target,
+    int width,
+    int height) : IComputeShader
+{
+    private readonly IReadOnlyBuffer<int> source = source;
+    private readonly ReadWriteBuffer<int> target = target;
+    private readonly int width = width;
+    private readonly int height = height;
+
+    public void Execute()
+    {
+        int x = ThreadIds.X;
+        int y = ThreadIds.Y;
+        if (x >= width || y >= height)
+            return;
+
+        int index = y * width + x;
+        target[index] = source[index];
+    }
+}
+
+[ThreadGroupSize(DefaultThreadGroupSizes.XY)]
+[GeneratedComputeShaderDescriptor]
 internal readonly partial struct MaskCountShader(
     ReadWriteBuffer<int> mask,
     ReadWriteBuffer<int> count,
@@ -800,7 +825,7 @@ internal readonly partial struct ProjectionHistogramShader(
 [ThreadGroupSize(DefaultThreadGroupSizes.XY)]
 [GeneratedComputeShaderDescriptor]
 internal readonly partial struct ForegroundSeedShader(
-    ReadOnlyBuffer<int> bgra,
+    IReadOnlyBuffer<int> bgra,
     ReadWriteBuffer<float> colorLab,
     ReadWriteBuffer<int> foreground,
     ReadWriteBuffer<int> valid,
@@ -811,7 +836,7 @@ internal readonly partial struct ForegroundSeedShader(
     int width,
     int height) : IComputeShader
 {
-    private readonly ReadOnlyBuffer<int> bgra = bgra;
+    private readonly IReadOnlyBuffer<int> bgra = bgra;
     private readonly ReadWriteBuffer<float> colorLab = colorLab;
     private readonly ReadWriteBuffer<int> foreground = foreground;
     private readonly ReadWriteBuffer<int> valid = valid;
@@ -887,7 +912,7 @@ internal readonly partial struct ForegroundSeedShader(
 internal readonly partial struct ForegroundPropagateShader(
     ReadWriteBuffer<int> sourceForeground,
     ReadWriteBuffer<int> sourceValid,
-    ReadOnlyBuffer<int> bgra,
+    IReadOnlyBuffer<int> bgra,
     ReadWriteBuffer<int> targetForeground,
     ReadWriteBuffer<int> targetValid,
     float backgroundR,
@@ -900,7 +925,7 @@ internal readonly partial struct ForegroundPropagateShader(
 {
     private readonly ReadWriteBuffer<int> sourceForeground = sourceForeground;
     private readonly ReadWriteBuffer<int> sourceValid = sourceValid;
-    private readonly ReadOnlyBuffer<int> bgra = bgra;
+    private readonly IReadOnlyBuffer<int> bgra = bgra;
     private readonly ReadWriteBuffer<int> targetForeground = targetForeground;
     private readonly ReadWriteBuffer<int> targetValid = targetValid;
     private readonly float backgroundR = backgroundR;
@@ -1047,12 +1072,12 @@ internal readonly partial struct SharedTextureToBufferShader(
 [ThreadGroupSize(DefaultThreadGroupSizes.XY)]
 [GeneratedComputeShaderDescriptor]
 internal readonly partial struct BufferToSharedTextureShader(
-    ReadWriteBuffer<int> bgra,
+    IReadOnlyBuffer<int> bgra,
     IReadWriteNormalizedTexture2D<float4> destination,
     int width,
     int height) : IComputeShader
 {
-    private readonly ReadWriteBuffer<int> bgra = bgra;
+    private readonly IReadOnlyBuffer<int> bgra = bgra;
     private readonly IReadWriteNormalizedTexture2D<float4> destination = destination;
     private readonly int width = width;
     private readonly int height = height;

@@ -6,8 +6,7 @@ namespace DirectionalColorKey
     {
         private readonly GraphicsDevice device;
 
-        private ReadOnlyBuffer<int>? bgraBuffer;
-        private ReadWriteBuffer<int>? bridgeBuffer;
+        private ReadWriteBuffer<int>? bgraBuffer;
         private ReadWriteBuffer<int>? previousBgraBuffer;
         private ReadWriteBuffer<float>? colorLabBuffer;
         private ReadWriteBuffer<float>? directionBufferA;
@@ -103,32 +102,34 @@ namespace DirectionalColorKey
 
         public float GetLambda(int cluster) => lambdas[cluster];
 
-        public void CaptureSource(ReadWriteTexture2D<Bgra32, Float4> source, int width, int height)
+        public ReadWriteBuffer<int> PrepareSource(int width, int height)
         {
             EnsureCapacity(width, height);
 
-            var bridge = EnsureBridgeBuffer();
-
-            device.For(width, height, new SharedTextureToBufferShader(source, bridge, width, height));
-
-            EnsureBgraBuffer().CopyFrom(bridge, 0, 0, pixelCount);
+            return EnsureBgraBuffer();
         }
 
-        public void WriteForegroundField(ReadWriteTexture2D<Bgra32, Float4> destination, int width, int height, Vector3 backgroundLab, Vector3 backgroundSrgb)
+        // 元画素の差分検出。CPUへ読み戻すのは変化画素数の1要素だけとする。
+        public bool DetectSourceChange()
         {
-            var foregroundSource = BuildForegroundFieldOnGpu(width, height, backgroundLab, backgroundSrgb);
+            var bgraGpu = EnsureBgraBuffer();
+            var previousBgraGpu = EnsurePreviousBgraBuffer();
+            var seedScratch = EnsureMaskBufferA();
+            var countGpu = EnsureCountBuffer();
 
-            device.For(width, height, new BufferToSharedTextureShader(foregroundSource, destination, width, height));
+            device.For(width, height, new ChangeSeedShader(
+                bgraGpu.AsReadOnly(), previousBgraGpu, seedScratch, width, height));
+
+            countGpu.CopyFrom(zeroCounts.AsSpan(0, 1));
+            device.For(width, height, new MaskCountShader(seedScratch, countGpu, width, height));
+            countGpu.CopyTo(counts.AsSpan(0, 1));
+
+            return counts[0] > 0;
         }
 
-        private ReadWriteBuffer<int> EnsureBridgeBuffer()
+        public IReadOnlyBuffer<int> BuildForegroundFieldView(int width, int height, Vector3 backgroundLab, Vector3 backgroundSrgb)
         {
-            if (bridgeBuffer is null || bridgeBuffer.Length < pixelCount)
-            {
-                bridgeBuffer?.Dispose();
-                bridgeBuffer = device.AllocateReadWriteBuffer<int>(pixelCount);
-            }
-            return bridgeBuffer;
+            return BuildForegroundFieldOnGpu(width, height, backgroundLab, backgroundSrgb).AsReadOnly();
         }
 
         public void Analyze(
@@ -167,7 +168,7 @@ namespace DirectionalColorKey
                 bgraGpu.CopyFrom(bgra[..pixelCount]);
 
             device.For(width, height, new DisplacementFieldShader(
-                bgraGpu, colorLabGpu, directionGpu,
+                bgraGpu.AsReadOnly(), colorLabGpu, directionGpu,
                 backgroundLab.X, backgroundLab.Y, backgroundLab.Z,
                 noiseThreshold, width, height));
 
@@ -200,7 +201,8 @@ namespace DirectionalColorKey
 
             device.For(width, height, new CopyDirectionsShader(
                 smoothedDirections, EnsurePreviousResultBuffer(), width, height));
-            EnsurePreviousBgraBuffer().CopyFrom(bgra[..pixelCount]);
+            device.For(width, height, new CopyPackedShader(
+                bgraGpu.AsReadOnly(), EnsurePreviousBgraBuffer(), width, height));
             hasPreviousResult = true;
             lastNoiseThresholdBits = noiseThresholdBits;
             lastSigmaColorBits = sigmaColorBits;
@@ -269,14 +271,14 @@ namespace DirectionalColorKey
             var validTarget = EnsureValidBufferB();
 
             device.For(width, height, new ForegroundSeedShader(
-                bgraGpu, colorLabGpu, foregroundSource, validSource,
+                bgraGpu.AsReadOnly(), colorLabGpu, foregroundSource, validSource,
                 backgroundLab.X, backgroundLab.Y, backgroundLab.Z,
                 referencePerp, width, height));
 
             for (int iteration = 0; iteration < PropagateIterations; iteration++)
             {
                 device.For(width, height, new ForegroundPropagateShader(
-                    foregroundSource, validSource, bgraGpu,
+                    foregroundSource, validSource, bgraGpu.AsReadOnly(),
                     foregroundTarget, validTarget,
                     backgroundSrgb.X, backgroundSrgb.Y, backgroundSrgb.Z,
                     PropagateReach, LineSigmaSquared, width, height));
@@ -358,7 +360,7 @@ namespace DirectionalColorKey
             var countGpu = EnsureCountBuffer();
 
             device.For(width, height, new ChangeSeedShader(
-                bgraGpu, previousBgraGpu, seedScratch, width, height));
+                bgraGpu.AsReadOnly(), previousBgraGpu, seedScratch, width, height));
 
             countGpu.CopyFrom(zeroCounts.AsSpan(0, 1));
             device.For(width, height, new MaskCountShader(seedScratch, countGpu, width, height));
@@ -560,13 +562,12 @@ namespace DirectionalColorKey
             DisposeFrameBuffers();
         }
 
-        private ReadOnlyBuffer<int> EnsureBgraBuffer()
+        private ReadWriteBuffer<int> EnsureBgraBuffer()
         {
             if (bgraBuffer is null || bgraBuffer.Length < pixelCount)
             {
                 bgraBuffer?.Dispose();
-            bridgeBuffer?.Dispose();
-                bgraBuffer = device.AllocateReadOnlyBuffer<int>(pixelCount);
+                bgraBuffer = device.AllocateReadWriteBuffer<int>(pixelCount);
             }
             return bgraBuffer;
         }
