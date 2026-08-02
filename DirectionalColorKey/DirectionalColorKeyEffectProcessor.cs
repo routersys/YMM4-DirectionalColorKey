@@ -300,7 +300,7 @@ namespace DirectionalColorKey
 
 		private bool TryEnsureInteropTextures(int width, int height)
 		{
-			if (interopWidth == width && interopHeight == height && foregroundLease is not null)
+			if (interopWidth == width && interopHeight == height)
 				return true;
 
 			foregroundLease?.Dispose();
@@ -312,7 +312,6 @@ namespace DirectionalColorKey
 				!resourceSet.TryEnsureForeground(width, height, out _))
 				return false;
 
-			foregroundLease = resourceSet.AcquireForegroundExternalViewLease();
 			interopWidth = width;
 			interopHeight = height;
 
@@ -349,6 +348,7 @@ namespace DirectionalColorKey
 			return analyzer.DetectSourceChange();
 		}
 
+		// 前景は初期所有者が計算キューであるため、往復を1度通すまで外部側は貸与を取れない。
 		private void WriteForegroundToSharedTexture(int width, int height, Vector3 backgroundLab, Vector3 backgroundSrgb)
 		{
 			interopHost!.WriteForegroundField(
@@ -356,6 +356,8 @@ namespace DirectionalColorKey
 				analyzer!.BuildForegroundFieldView(width, height, backgroundLab, backgroundSrgb),
 				width,
 				height).Wait();
+
+			foregroundLease ??= resourceSet.AcquireForegroundExternalViewLease();
 		}
 
 		private bool RenderSourceToBuffer(ID2D1DeviceContext dc, RawRectF bounds, int width, int height)
