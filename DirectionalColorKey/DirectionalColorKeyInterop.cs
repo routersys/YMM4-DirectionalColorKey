@@ -205,6 +205,40 @@ namespace DirectionalColorKey
         }
     }
 
+    [ComputePipelineHost("device", 2)]
+    internal sealed partial class DirectionalColorKeyInteropHost
+    {
+        private readonly GraphicsDevice device;
+
+        [ComputePipeline]
+        [ComputeInterop]
+        private void CaptureSource(
+            in ComputeContext context,
+            [ComputeResource(ComputeResourceAccess.ReadWrite, Sharing = ComputeResourceSharing.External)] ReadWriteTexture2D<Bgra32, Float4> source,
+            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<int> bgra,
+            int width,
+            int height)
+        {
+            _ = device;
+
+            context.For(width, height, new SharedTextureToBufferShader(source, bgra, width, height));
+        }
+
+        [ComputePipeline]
+        [ComputeInterop]
+        private void WriteForegroundField(
+            in ComputeContext context,
+            [ComputeResource(ComputeResourceAccess.ReadWrite, Sharing = ComputeResourceSharing.External)] ReadWriteTexture2D<Bgra32, Float4> destination,
+            [ComputeResource(ComputeResourceAccess.Read)] IReadOnlyBuffer<int> foreground,
+            int width,
+            int height)
+        {
+            _ = device;
+
+            context.For(width, height, new BufferToSharedTextureShader(foreground, destination, width, height));
+        }
+    }
+
     [ComputeInteropResourceSet]
     internal sealed partial class DirectionalColorKeyResourceSet
     {
