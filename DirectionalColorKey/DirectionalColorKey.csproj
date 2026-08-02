@@ -77,7 +77,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="ComputeWeave" Version="1.0.2" />
+		<PackageReference Include="ComputeWeave" Version="1.1.0" />
 		<PackageReference Include="Microsoft.Xaml.Behaviors.Wpf" Version="1.1.142" />
 		<Using Include="ComputeWeave" />
 	</ItemGroup>
