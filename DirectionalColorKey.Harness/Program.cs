@@ -20,6 +20,27 @@ Vector3 backgroundSrgb = new(0f, 177f / 255f, 64f / 255f);
 Vector3 backgroundLab = ToOklab(ToLinear(backgroundSrgb));
 Vector3 whiteDirection = ComputeWhiteDirection(backgroundLab);
 
+if (args.Length >= 2 && args[0] is "dump")
+{
+    DumpForegroundField(analyzer, args[1], backgroundLab, backgroundSrgb, whiteDirection);
+
+    return 0;
+}
+
+if (args.Length >= 3 && args[0] is "probe")
+{
+    int probeWidth = int.Parse(args[1]);
+    int probeHeight = int.Parse(args[2]);
+    int[] probeImage = CreateTestImage(probeWidth, probeHeight);
+
+    RunAnalyze(analyzer, probeImage, probeWidth, probeHeight, backgroundLab, whiteDirection, 4, DirectionalColorKeyScaleMode.Physical, true);
+    _ = analyzer.BuildForegroundField(probeWidth, probeHeight, backgroundLab, backgroundSrgb);
+
+    Console.WriteLine($"probe {probeWidth}x{probeHeight} ok");
+
+    return 0;
+}
+
 (int Width, int Height)[] sizes = [(1280, 720), (1920, 1080), (3840, 2160)];
 
 Console.WriteLine("size          clusters  mode        analyze(ms)  foreground(ms)  total(ms)");
@@ -41,6 +62,48 @@ foreach ((int width, int height) in sizes)
 }
 
 return 0;
+
+// 等価性の照合用。前景場をそのままバイト列として書き出す。
+static void DumpForegroundField(
+    DirectionalColorKeyAnalyzer analyzer,
+    string path,
+    Vector3 backgroundLab,
+    Vector3 backgroundSrgb,
+    Vector3 whiteDirection)
+{
+    using FileStream stream = File.Create(path);
+    using BinaryWriter writer = new(stream);
+
+    foreach ((int width, int height) in new[] { (320, 176), (640, 360), (1280, 720) })
+    {
+        int[] image = CreateTestImage(width, height);
+
+        foreach (int clusters in new[] { 1, 4 })
+        {
+            foreach (DirectionalColorKeyScaleMode mode in new[] { DirectionalColorKeyScaleMode.Physical, DirectionalColorKeyScaleMode.Foreground })
+            {
+                RunAnalyze(analyzer, image, width, height, backgroundLab, whiteDirection, clusters, mode, true);
+
+                ReadOnlySpan<int> field = analyzer.BuildForegroundField(width, height, backgroundLab, backgroundSrgb);
+
+                for (int i = 0; i < field.Length; i++)
+                    writer.Write(field[i]);
+
+                for (int c = 0; c < analyzer.ClusterCount; c++)
+                {
+                    Vector3 center = analyzer.GetCenter(c);
+
+                    writer.Write(center.X);
+                    writer.Write(center.Y);
+                    writer.Write(center.Z);
+                    writer.Write(analyzer.GetLambda(c));
+                }
+            }
+        }
+    }
+
+    Console.WriteLine($"wrote {path}");
+}
 
 static void Measure(
     DirectionalColorKeyAnalyzer analyzer,
