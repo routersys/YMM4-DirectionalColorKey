@@ -828,7 +828,6 @@ internal readonly partial struct ForegroundSeedShader(
     IReadOnlyBuffer<int> bgra,
     ReadWriteBuffer<float> colorLab,
     ReadWriteBuffer<int> foreground,
-    ReadWriteBuffer<int> valid,
     float backgroundL,
     float backgroundA,
     float backgroundB,
@@ -839,7 +838,6 @@ internal readonly partial struct ForegroundSeedShader(
     private readonly IReadOnlyBuffer<int> bgra = bgra;
     private readonly ReadWriteBuffer<float> colorLab = colorLab;
     private readonly ReadWriteBuffer<int> foreground = foreground;
-    private readonly ReadWriteBuffer<int> valid = valid;
     private readonly float backgroundL = backgroundL;
     private readonly float backgroundA = backgroundA;
     private readonly float backgroundB = backgroundB;
@@ -863,7 +861,6 @@ internal readonly partial struct ForegroundSeedShader(
         if (a == 0)
         {
             foreground[index] = 0;
-            valid[index] = 0;
             return;
         }
 
@@ -872,7 +869,6 @@ internal readonly partial struct ForegroundSeedShader(
         if (bgLenSq <= 1e-8f || referencePerp <= 1e-5f)
         {
             foreground[index] = 0;
-            valid[index] = 0;
             return;
         }
 
@@ -889,7 +885,6 @@ internal readonly partial struct ForegroundSeedShader(
         if (perp < referencePerp)
         {
             foreground[index] = 0;
-            valid[index] = 0;
             return;
         }
 
@@ -903,7 +898,6 @@ internal readonly partial struct ForegroundSeedShader(
         int bByte = (int)(bSrgb * 255f + 0.5f);
 
         foreground[index] = (0xFF << 24) | (rByte << 16) | (gByte << 8) | bByte;
-        valid[index] = 1;
     }
 }
 
@@ -911,10 +905,8 @@ internal readonly partial struct ForegroundSeedShader(
 [GeneratedComputeShaderDescriptor]
 internal readonly partial struct ForegroundPropagateShader(
     ReadWriteBuffer<int> sourceForeground,
-    ReadWriteBuffer<int> sourceValid,
     IReadOnlyBuffer<int> bgra,
     ReadWriteBuffer<int> targetForeground,
-    ReadWriteBuffer<int> targetValid,
     float backgroundR,
     float backgroundG,
     float backgroundB,
@@ -924,10 +916,8 @@ internal readonly partial struct ForegroundPropagateShader(
     int height) : IComputeShader
 {
     private readonly ReadWriteBuffer<int> sourceForeground = sourceForeground;
-    private readonly ReadWriteBuffer<int> sourceValid = sourceValid;
     private readonly IReadOnlyBuffer<int> bgra = bgra;
     private readonly ReadWriteBuffer<int> targetForeground = targetForeground;
-    private readonly ReadWriteBuffer<int> targetValid = targetValid;
     private readonly float backgroundR = backgroundR;
     private readonly float backgroundG = backgroundG;
     private readonly float backgroundB = backgroundB;
@@ -951,7 +941,6 @@ internal readonly partial struct ForegroundPropagateShader(
         if (a == 0)
         {
             targetForeground[index] = 0;
-            targetValid[index] = 0;
             return;
         }
 
@@ -989,10 +978,10 @@ internal readonly partial struct ForegroundPropagateShader(
                     continue;
 
                 int sIndex = sy * width + sx;
-                if (sourceValid[sIndex] == 0)
+                int f = sourceForeground[sIndex];
+                if (f == 0)
                     continue;
 
-                int f = sourceForeground[sIndex];
                 float frs = ((f >> 16) & 0xFF) * (1f / 255f);
                 float fgs = ((f >> 8) & 0xFF) * (1f / 255f);
                 float fbs = ((f >> 0) & 0xFF) * (1f / 255f);
@@ -1029,12 +1018,10 @@ internal readonly partial struct ForegroundPropagateShader(
         if (bestPurity >= 0f)
         {
             targetForeground[index] = bestForeground;
-            targetValid[index] = 1;
             return;
         }
 
         targetForeground[index] = 0;
-        targetValid[index] = 0;
     }
 }
 

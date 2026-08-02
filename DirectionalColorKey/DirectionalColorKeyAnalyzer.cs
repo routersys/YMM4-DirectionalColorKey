@@ -22,8 +22,6 @@ namespace DirectionalColorKey
         private ReadWriteBuffer<int>? histogramBuffer;
         private ReadWriteBuffer<int>? foregroundBufferA;
         private ReadWriteBuffer<int>? foregroundBufferB;
-        private ReadWriteBuffer<int>? validBufferA;
-        private ReadWriteBuffer<int>? validBufferB;
         private int[]? foregroundReadback;
 
         private int width;
@@ -266,25 +264,22 @@ namespace DirectionalColorKey
             var bgraGpu = EnsureBgraBuffer();
             var colorLabGpu = EnsureColorLabBuffer();
             var foregroundSource = EnsureForegroundBufferA();
-            var validSource = EnsureValidBufferA();
             var foregroundTarget = EnsureForegroundBufferB();
-            var validTarget = EnsureValidBufferB();
 
             device.For(width, height, new ForegroundSeedShader(
-                bgraGpu.AsReadOnly(), colorLabGpu, foregroundSource, validSource,
+                bgraGpu.AsReadOnly(), colorLabGpu, foregroundSource,
                 backgroundLab.X, backgroundLab.Y, backgroundLab.Z,
                 referencePerp, width, height));
 
             for (int iteration = 0; iteration < PropagateIterations; iteration++)
             {
                 device.For(width, height, new ForegroundPropagateShader(
-                    foregroundSource, validSource, bgraGpu.AsReadOnly(),
-                    foregroundTarget, validTarget,
+                    foregroundSource, bgraGpu.AsReadOnly(),
+                    foregroundTarget,
                     backgroundSrgb.X, backgroundSrgb.Y, backgroundSrgb.Z,
                     PropagateReach, LineSigmaSquared, width, height));
 
                 (foregroundSource, foregroundTarget) = (foregroundTarget, foregroundSource);
-                (validSource, validTarget) = (validTarget, validSource);
             }
 
             return foregroundSource;
@@ -321,26 +316,6 @@ namespace DirectionalColorKey
                 foregroundBufferB = device.AllocateReadWriteBuffer<int>(pixelCount);
             }
             return foregroundBufferB;
-        }
-
-        private ReadWriteBuffer<int> EnsureValidBufferA()
-        {
-            if (validBufferA is null || validBufferA.Length < pixelCount)
-            {
-                validBufferA?.Dispose();
-                validBufferA = device.AllocateReadWriteBuffer<int>(pixelCount);
-            }
-            return validBufferA;
-        }
-
-        private ReadWriteBuffer<int> EnsureValidBufferB()
-        {
-            if (validBufferB is null || validBufferB.Length < pixelCount)
-            {
-                validBufferB?.Dispose();
-                validBufferB = device.AllocateReadWriteBuffer<int>(pixelCount);
-            }
-            return validBufferB;
         }
 
         private bool TryRunIncrementalSmooth(
@@ -700,8 +675,6 @@ namespace DirectionalColorKey
             computeMaskBuffer?.Dispose();
             foregroundBufferA?.Dispose();
             foregroundBufferB?.Dispose();
-            validBufferA?.Dispose();
-            validBufferB?.Dispose();
             bgraBuffer = null;
             previousBgraBuffer = null;
             colorLabBuffer = null;
@@ -714,8 +687,6 @@ namespace DirectionalColorKey
             computeMaskBuffer = null;
             foregroundBufferA = null;
             foregroundBufferB = null;
-            validBufferA = null;
-            validBufferB = null;
         }
 
         public void Dispose()
