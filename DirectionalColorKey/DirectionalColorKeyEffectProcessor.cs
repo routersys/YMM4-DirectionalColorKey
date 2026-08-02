@@ -31,6 +31,13 @@ namespace DirectionalColorKey
 		private int[]? sourceBuffer;
 		private int bufferPixelCount;
 
+		private readonly DirectionalColorKeyInteropProvider? interopProvider;
+		private readonly ComputeInteropDomain? interopDomain;
+		private readonly DirectionalColorKeyResourceSet? resourceSet;
+		private readonly DirectionalColorKeyInteropHost? interopHost;
+		private ExternalTextureLease<DirectionalColorKeyExternalView>? foregroundLease;
+		private int interopWidth, interopHeight;
+
 		private bool isFirst = true;
 		private bool hasAnalysisCache;
 		private int lastFrame;
@@ -54,6 +61,44 @@ namespace DirectionalColorKey
 			this.item = item;
 			if (analyzer is not null)
 				disposer.Collect(analyzer);
+
+			interopProvider = DirectionalColorKeyInteropProvider.TryCreate(devices, out var interopDevice);
+
+			if (interopProvider is null || interopDevice is null)
+				return;
+
+			try
+			{
+				interopDomain = interopDevice.RegisterExternalDomain(interopProvider);
+				resourceSet = DirectionalColorKeyResourceSet.Create(interopDevice, interopDomain);
+				interopHost = DirectionalColorKeyInteropHost.Create(interopDevice, 2);
+
+				disposer.Collect(new ActionDisposer(ReleaseInterop));
+			}
+			catch
+			{
+				ReleaseInterop();
+
+				interopHost = null;
+				resourceSet = null;
+				interopDomain = null;
+				interopProvider = null;
+			}
+		}
+
+		private bool IsInteropAvailable => interopHost is not null && resourceSet is not null && interopProvider is not null;
+
+		private void ReleaseInterop()
+		{
+			foregroundLease?.Dispose();
+			foregroundLease = null;
+
+			interopHost?.Dispose();
+			interopHost?.WaitForDisposal();
+			resourceSet?.Dispose();
+			resourceSet?.WaitForDisposal();
+			interopDomain?.Dispose();
+			interopProvider?.Dispose();
 		}
 
 		protected override ID2D1Image? CreateEffect(IGraphicsDevicesAndContext devices)
@@ -125,7 +170,11 @@ namespace DirectionalColorKey
 				|| lastFrame != frame
 				|| !lastBounds.Equals(bounds);
 
-			bool contentChanged = sourcePossiblyChanged && RenderSourceToBuffer(dc, bounds, width, height);
+			bool useInterop = IsInteropAvailable && TryEnsureInteropTextures(width, height);
+
+			bool contentChanged = sourcePossiblyChanged && (useInterop
+				? CaptureSourceThroughSharedTexture(bounds, width, height)
+				: RenderSourceToBuffer(dc, bounds, width, height));
 
 			bool analysisDirty = isFirst
 				|| !hasAnalysisCache
@@ -156,7 +205,7 @@ namespace DirectionalColorKey
 				float foregroundLambda = ComputeForegroundLambda(backgroundLab, currentForeground);
 
 				analyzer.Analyze(
-					sourceBuffer!.AsSpan(0, pixelCount),
+					useInterop ? default : sourceBuffer!.AsSpan(0, pixelCount),
 					width,
 					height,
 					backgroundLab,
@@ -176,9 +225,17 @@ namespace DirectionalColorKey
 					currentBackground.R / 255f,
 					currentBackground.G / 255f,
 					currentBackground.B / 255f);
-				var foregroundField = analyzer.BuildForegroundField(width, height, backgroundLab, backgroundSrgb);
-				UploadForegroundField(dc, foregroundField, width, height);
-				effect.SetInput(1, foregroundBitmap, true);
+				if (useInterop)
+				{
+					WriteForegroundToSharedTexture(width, height, backgroundLab, backgroundSrgb);
+					effect.SetInput(1, foregroundLease!.DangerousGetView().Bitmap, true);
+				}
+				else
+				{
+					var foregroundField = analyzer.BuildForegroundField(width, height, backgroundLab, backgroundSrgb);
+					UploadForegroundField(dc, foregroundField, width, height);
+					effect.SetInput(1, foregroundBitmap, true);
+				}
 
 				hasAnalysisCache = true;
 			}
@@ -239,6 +296,66 @@ namespace DirectionalColorKey
 			var center = analyzer.GetCenter(index);
 			float lambda = analyzer.GetLambda(index);
 			return new Vector4(center.X, center.Y, center.Z, lambda);
+		}
+
+		private bool TryEnsureInteropTextures(int width, int height)
+		{
+			if (interopWidth == width && interopHeight == height && foregroundLease is not null)
+				return true;
+
+			foregroundLease?.Dispose();
+			foregroundLease = null;
+			interopWidth = 0;
+			interopHeight = 0;
+
+			if (!resourceSet!.TryEnsureSource(width, height, out _) ||
+				!resourceSet.TryEnsureForeground(width, height, out _))
+				return false;
+
+			foregroundLease = resourceSet.AcquireForegroundExternalViewLease();
+			interopWidth = width;
+			interopHeight = height;
+
+			return true;
+		}
+
+		// 入力を共有テクスチャへ直接描き、計算キューがそれを読む。CPUを経由しない。
+		private bool CaptureSourceThroughSharedTexture(RawRectF bounds, int width, int height)
+		{
+			var renderContext = interopProvider!.RenderContext;
+
+			using (var borrow = resourceSet!.BeginSourceExternalOperation())
+			{
+				var previousTarget = renderContext.Target;
+				renderContext.Target = borrow.DangerousGetView().Bitmap;
+				renderContext.BeginDraw();
+				renderContext.Clear(null);
+				renderContext.DrawImage(
+					input!,
+					new Vector2(-bounds.Left, -bounds.Top),
+					null,
+					InterpolationMode.NearestNeighbor,
+					CompositeMode.SourceCopy);
+				renderContext.EndDraw();
+				renderContext.Target = previousTarget;
+			}
+
+			interopHost!.CaptureSource(
+				resourceSet.GetSourceComputeBinding(),
+				analyzer!.PrepareSource(width, height),
+				width,
+				height).Wait();
+
+			return analyzer.DetectSourceChange();
+		}
+
+		private void WriteForegroundToSharedTexture(int width, int height, Vector3 backgroundLab, Vector3 backgroundSrgb)
+		{
+			interopHost!.WriteForegroundField(
+				resourceSet!.GetForegroundComputeBinding(),
+				analyzer!.BuildForegroundFieldView(width, height, backgroundLab, backgroundSrgb),
+				width,
+				height).Wait();
 		}
 
 		private bool RenderSourceToBuffer(ID2D1DeviceContext dc, RawRectF bounds, int width, int height)
