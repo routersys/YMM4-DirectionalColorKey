@@ -22,6 +22,7 @@ namespace DirectionalColorKey
         private ReadWriteBuffer<int>? histogramBuffer;
         private ReadWriteBuffer<int>? foregroundBufferA;
         private ReadWriteBuffer<int>? foregroundBufferB;
+        private ReadWriteBuffer<float>? srgbToLinearBuffer;
         private int[]? foregroundReadback;
 
         private int width;
@@ -265,6 +266,7 @@ namespace DirectionalColorKey
             var colorLabGpu = EnsureColorLabBuffer();
             var foregroundSource = EnsureForegroundBufferA();
             var foregroundTarget = EnsureForegroundBufferB();
+            var srgbToLinear = EnsureSrgbToLinearBuffer();
 
             device.For(width, height, new ForegroundSeedShader(
                 bgraGpu.AsReadOnly(), colorLabGpu, foregroundSource,
@@ -274,7 +276,7 @@ namespace DirectionalColorKey
             for (int iteration = 0; iteration < PropagateIterations; iteration++)
             {
                 device.For(width, height, new ForegroundPropagateShader(
-                    foregroundSource, bgraGpu.AsReadOnly(),
+                    foregroundSource, bgraGpu.AsReadOnly(), srgbToLinear,
                     foregroundTarget,
                     backgroundSrgb.X, backgroundSrgb.Y, backgroundSrgb.Z,
                     PropagateReach, LineSigmaSquared, width, height));
@@ -316,6 +318,16 @@ namespace DirectionalColorKey
                 foregroundBufferB = device.AllocateReadWriteBuffer<int>(pixelCount);
             }
             return foregroundBufferB;
+        }
+
+        private IReadOnlyBuffer<float> EnsureSrgbToLinearBuffer()
+        {
+            if (srgbToLinearBuffer is null)
+            {
+                srgbToLinearBuffer = device.AllocateReadWriteBuffer<float>(256);
+                device.For(256, new SrgbToLinearTableShader(srgbToLinearBuffer));
+            }
+            return srgbToLinearBuffer.AsReadOnly();
         }
 
         private bool TryRunIncrementalSmooth(
@@ -692,6 +704,8 @@ namespace DirectionalColorKey
         public void Dispose()
         {
             DisposeFrameBuffers();
+            srgbToLinearBuffer?.Dispose();
+            srgbToLinearBuffer = null;
             centerBuffer?.Dispose();
             accumBuffer?.Dispose();
             countBuffer?.Dispose();

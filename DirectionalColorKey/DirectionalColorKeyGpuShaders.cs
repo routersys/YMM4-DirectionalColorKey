@@ -622,6 +622,27 @@ internal readonly partial struct CopyDirectionsShader(
     }
 }
 
+// packed byte から線形値への変換は256通りしかない。
+// 伝播ループが近傍ごとに同じ変換を繰り返さないよう、同一の式で表を一度だけ作る。
+[ThreadGroupSize(DefaultThreadGroupSizes.X)]
+[GeneratedComputeShaderDescriptor]
+internal readonly partial struct SrgbToLinearTableShader(
+    ReadWriteBuffer<float> table) : IComputeShader
+{
+    private readonly ReadWriteBuffer<float> table = table;
+
+    public void Execute()
+    {
+        int index = ThreadIds.X;
+        if (index >= 256)
+            return;
+
+        float srgb = index * (1f / 255f);
+
+        table[index] = srgb <= 0.04045f ? srgb / 12.92f : Hlsl.Pow((srgb + 0.055f) / 1.055f, 2.4f);
+    }
+}
+
 [ThreadGroupSize(DefaultThreadGroupSizes.XY)]
 [GeneratedComputeShaderDescriptor]
 internal readonly partial struct CopyPackedShader(
@@ -906,6 +927,7 @@ internal readonly partial struct ForegroundSeedShader(
 internal readonly partial struct ForegroundPropagateShader(
     ReadWriteBuffer<int> sourceForeground,
     IReadOnlyBuffer<int> bgra,
+    IReadOnlyBuffer<float> srgbToLinear,
     ReadWriteBuffer<int> targetForeground,
     float backgroundR,
     float backgroundG,
@@ -917,6 +939,7 @@ internal readonly partial struct ForegroundPropagateShader(
 {
     private readonly ReadWriteBuffer<int> sourceForeground = sourceForeground;
     private readonly IReadOnlyBuffer<int> bgra = bgra;
+    private readonly IReadOnlyBuffer<float> srgbToLinear = srgbToLinear;
     private readonly ReadWriteBuffer<int> targetForeground = targetForeground;
     private readonly float backgroundR = backgroundR;
     private readonly float backgroundG = backgroundG;
@@ -982,13 +1005,9 @@ internal readonly partial struct ForegroundPropagateShader(
                 if (f == 0)
                     continue;
 
-                float frs = ((f >> 16) & 0xFF) * (1f / 255f);
-                float fgs = ((f >> 8) & 0xFF) * (1f / 255f);
-                float fbs = ((f >> 0) & 0xFF) * (1f / 255f);
-
-                float fr = frs <= 0.04045f ? frs / 12.92f : Hlsl.Pow((frs + 0.055f) / 1.055f, 2.4f);
-                float fg = fgs <= 0.04045f ? fgs / 12.92f : Hlsl.Pow((fgs + 0.055f) / 1.055f, 2.4f);
-                float fb = fbs <= 0.04045f ? fbs / 12.92f : Hlsl.Pow((fbs + 0.055f) / 1.055f, 2.4f);
+                float fr = srgbToLinear[(f >> 16) & 0xFF];
+                float fg = srgbToLinear[(f >> 8) & 0xFF];
+                float fb = srgbToLinear[(f >> 0) & 0xFF];
 
                 float dr = fr - bgRl;
                 float dg = fg - bgGl;
