@@ -45,7 +45,7 @@ namespace DirectionalColorKey
         private const int PropagateReach = 4;
         private const int PropagateIterations = 16;
         private const float LineSigmaSquared = 0.1225f;
-        private const int MaximumPendingSubmissions = 4;
+        private const int MaximumPendingSubmissions = 8;
         private const int SrgbTableLength = 256;
 
         private readonly float[] centers = new float[MaxClusters * 3];
