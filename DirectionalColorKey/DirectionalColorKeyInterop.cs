@@ -4,13 +4,6 @@ using YukkuriMovieMaker.Commons;
 
 namespace DirectionalColorKey
 {
-    internal sealed class ActionDisposer(Action action) : IDisposable
-    {
-        private readonly Action action = action;
-
-        public void Dispose() => action();
-    }
-
     internal sealed class DirectionalColorKeyInteropProvider : ComputeExternalDirect3D11Provider
     {
         private readonly ID2D1DeviceContext6 renderContext;

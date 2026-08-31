@@ -79,8 +79,6 @@ namespace DirectionalColorKey
 				interopDomain = interopDevice.RegisterExternalDomain(interopProvider);
 				resourceSet = DirectionalColorKeyResourceSet.Create(interopDevice, interopDomain);
 				interopHost = DirectionalColorKeyInteropHost.Create(interopDevice, 2);
-
-				disposer.Collect(new ActionDisposer(ReleaseInterop));
 			}
 			catch
 			{
@@ -139,6 +137,22 @@ namespace DirectionalColorKey
 			effect?.SetInput(0, null, true);
 			effect?.SetInput(1, null, true);
 			hasAnalysisCache = false;
+		}
+
+		protected override void Dispose(bool disposing)
+		{
+			try
+			{
+				if (disposing)
+				{
+					ClearEffectChain();
+					ReleaseInterop();
+				}
+			}
+			finally
+			{
+				base.Dispose(disposing);
+			}
 		}
 
 		public override DrawDescription Update(EffectDescription effectDescription)
