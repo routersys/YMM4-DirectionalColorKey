@@ -5,6 +5,7 @@ namespace DirectionalColorKey
     internal sealed class DirectionalColorKeyAnalyzer : IDisposable
     {
         private readonly GraphicsDevice device;
+        private readonly DirectionalColorKeyPipelineHost pipelineHost;
 
         private ReadWriteBuffer<int>? bgraBuffer;
         private ReadWriteBuffer<int>? previousBgraBuffer;
@@ -44,6 +45,7 @@ namespace DirectionalColorKey
         private const int PropagateReach = 4;
         private const int PropagateIterations = 16;
         private const float LineSigmaSquared = 0.1225f;
+        private const int MaximumPendingSubmissions = 4;
 
         private readonly float[] centers = new float[MaxClusters * 3];
         private readonly int[] accumulators = new int[MaxClusters * 3 + MaxClusters];
@@ -68,6 +70,7 @@ namespace DirectionalColorKey
         private DirectionalColorKeyAnalyzer(GraphicsDevice device)
         {
             this.device = device;
+            pipelineHost = DirectionalColorKeyPipelineHost.Create(device, MaximumPendingSubmissions);
         }
 
         public static DirectionalColorKeyAnalyzer? TryCreate()
@@ -268,23 +271,15 @@ namespace DirectionalColorKey
             var foregroundTarget = EnsureForegroundBufferB();
             var srgbToLinear = EnsureSrgbToLinearBuffer();
 
-            device.For(width, height, new ForegroundSeedShader(
-                bgraGpu.AsReadOnly(), colorLabGpu, foregroundSource,
+            pipelineHost.RecordForegroundField(
+                bgraGpu.AsReadOnly(), colorLabGpu, srgbToLinear, foregroundSource, foregroundTarget,
                 backgroundLab.X, backgroundLab.Y, backgroundLab.Z,
-                referencePerp, width, height));
+                referencePerp,
+                backgroundSrgb.X, backgroundSrgb.Y, backgroundSrgb.Z,
+                PropagateReach, LineSigmaSquared, PropagateIterations,
+                width, height);
 
-            for (int iteration = 0; iteration < PropagateIterations; iteration++)
-            {
-                device.For(width, height, new ForegroundPropagateShader(
-                    foregroundSource, bgraGpu.AsReadOnly(), srgbToLinear,
-                    foregroundTarget,
-                    backgroundSrgb.X, backgroundSrgb.Y, backgroundSrgb.Z,
-                    PropagateReach, LineSigmaSquared, width, height));
-
-                (foregroundSource, foregroundTarget) = (foregroundTarget, foregroundSource);
-            }
-
-            return foregroundSource;
+            return (PropagateIterations & 1) == 0 ? foregroundSource : foregroundTarget;
         }
 
         private static float ComputeReferencePerp(Vector3 backgroundLab)
@@ -703,6 +698,8 @@ namespace DirectionalColorKey
 
         public void Dispose()
         {
+            pipelineHost.Dispose();
+            pipelineHost.WaitForDisposal();
             DisposeFrameBuffers();
             srgbToLinearBuffer?.Dispose();
             srgbToLinearBuffer = null;
