@@ -36,7 +36,7 @@ namespace DirectionalColorKey
 		private readonly ComputeInteropDomain? interopDomain;
 		private readonly DirectionalColorKeyResourceSet? resourceSet;
 		private readonly DirectionalColorKeyInteropHost? interopHost;
-		private ExternalTextureLease<DirectionalColorKeyExternalView>? foregroundLease;
+		private ExternalTextureLease<ExternalDirect3D11TextureView>? foregroundLease;
 		private int interopWidth, interopHeight;
 
 		private bool isFirst = true;
@@ -237,7 +237,10 @@ namespace DirectionalColorKey
 				if (useInterop)
 				{
 					WriteForegroundToSharedTexture(width, height, backgroundLab, backgroundSrgb);
-					effect.SetInput(1, foregroundLease!.DangerousGetView().Bitmap, true);
+
+					using var sharedForegroundBitmap = new ID2D1Bitmap1(foregroundLease!.DangerousGetView().AddRefBitmap());
+
+					effect.SetInput(1, sharedForegroundBitmap, true);
 				}
 				else
 				{
@@ -335,7 +338,10 @@ namespace DirectionalColorKey
 			using (var borrow = resourceSet!.BeginSourceExternalOperation())
 			{
 				var previousTarget = renderContext.Target;
-				renderContext.Target = borrow.DangerousGetView().Bitmap;
+
+				using var sharedSourceBitmap = new ID2D1Bitmap1(borrow.DangerousGetView().AddRefBitmap());
+
+				renderContext.Target = sharedSourceBitmap;
 				renderContext.BeginDraw();
 				renderContext.Clear(null);
 				renderContext.DrawImage(
