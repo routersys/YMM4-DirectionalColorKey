@@ -46,6 +46,7 @@ namespace DirectionalColorKey
         private const int PropagateIterations = 16;
         private const float LineSigmaSquared = 0.1225f;
         private const int MaximumPendingSubmissions = 4;
+        private const int SrgbTableLength = 256;
 
         private readonly float[] centers = new float[MaxClusters * 3];
         private readonly int[] accumulators = new int[MaxClusters * 3 + MaxClusters];
@@ -119,11 +120,11 @@ namespace DirectionalColorKey
             var seedScratch = EnsureMaskBufferA();
             var countGpu = EnsureCountBuffer();
 
-            device.For(width, height, new ChangeSeedShader(
-                bgraGpu.AsReadOnly(), previousBgraGpu, seedScratch, width, height));
-
             countGpu.CopyFrom(zeroCounts.AsSpan(0, 1));
-            device.For(width, height, new MaskCountShader(seedScratch, countGpu, width, height));
+
+            pipelineHost.RecordChangeCount(
+                bgraGpu.AsReadOnly(), previousBgraGpu, seedScratch, countGpu, width, height);
+
             countGpu.CopyTo(counts.AsSpan(0, 1));
 
             return counts[0] > 0;
@@ -169,10 +170,10 @@ namespace DirectionalColorKey
             if (!bgra.IsEmpty)
                 bgraGpu.CopyFrom(bgra[..pixelCount]);
 
-            device.For(width, height, new DisplacementFieldShader(
+            pipelineHost.RecordDisplacementField(
                 bgraGpu.AsReadOnly(), colorLabGpu, directionGpu,
                 backgroundLab.X, backgroundLab.Y, backgroundLab.Z,
-                noiseThreshold, width, height));
+                noiseThreshold, width, height);
 
             float sigmaColorSq = 2f * sigmaColor * sigmaColor;
 
@@ -188,23 +189,15 @@ namespace DirectionalColorKey
             if (!canReuse || !TryRunIncrementalSmooth(
                 bgra, directionGpu, directionScratch, colorLabGpu, sigmaColorSq, out smoothedDirections))
             {
-                var smoothSource = directionGpu;
-                var smoothTarget = directionScratch;
+                pipelineHost.RecordDirectionSmooth(
+                    directionGpu, directionScratch, colorLabGpu, sigmaColorSq, SmoothIterations, width, height);
 
-                for (int iteration = 0; iteration < SmoothIterations; iteration++)
-                {
-                    device.For(width, height, new DirectionSmoothShader(
-                        smoothSource, colorLabGpu, smoothTarget, sigmaColorSq, width, height));
-                    (smoothSource, smoothTarget) = (smoothTarget, smoothSource);
-                }
-
-                smoothedDirections = smoothSource;
+                smoothedDirections = (SmoothIterations & 1) == 0 ? directionGpu : directionScratch;
             }
 
-            device.For(width, height, new CopyDirectionsShader(
-                smoothedDirections, EnsurePreviousResultBuffer(), width, height));
-            device.For(width, height, new CopyPackedShader(
-                bgraGpu.AsReadOnly(), EnsurePreviousBgraBuffer(), width, height));
+            pipelineHost.RecordPreviousSnapshot(
+                smoothedDirections, EnsurePreviousResultBuffer(),
+                bgraGpu.AsReadOnly(), EnsurePreviousBgraBuffer(), width, height);
             hasPreviousResult = true;
             lastNoiseThresholdBits = noiseThresholdBits;
             lastSigmaColorBits = sigmaColorBits;
@@ -224,8 +217,8 @@ namespace DirectionalColorKey
                 centerGpu.CopyFrom(centers.AsSpan(0, clusterCount * 3));
                 accumGpu.CopyFrom(zeroAccumulators.AsSpan(0, accumLength));
 
-                device.For(width, height, new ClusterAssignAccumulateShader(
-                    smoothedDirections, centerGpu, accumGpu, clusterCount, FixedPointScale, width, height));
+                pipelineHost.RecordClusterAssign(
+                    smoothedDirections, centerGpu, accumGpu, clusterCount, FixedPointScale, width, height);
 
                 accumGpu.CopyTo(accumulators.AsSpan(0, accumLength));
 
@@ -319,8 +312,8 @@ namespace DirectionalColorKey
         {
             if (srgbToLinearBuffer is null)
             {
-                srgbToLinearBuffer = device.AllocateReadWriteBuffer<float>(256);
-                device.For(256, new SrgbToLinearTableShader(srgbToLinearBuffer));
+                srgbToLinearBuffer = device.AllocateReadWriteBuffer<float>(SrgbTableLength);
+                pipelineHost.RecordSrgbToLinearTable(srgbToLinearBuffer, SrgbTableLength);
             }
             return srgbToLinearBuffer.AsReadOnly();
         }
@@ -341,11 +334,11 @@ namespace DirectionalColorKey
             var computeMask = EnsureComputeMaskBuffer();
             var countGpu = EnsureCountBuffer();
 
-            device.For(width, height, new ChangeSeedShader(
-                bgraGpu.AsReadOnly(), previousBgraGpu, seedScratch, width, height));
-
             countGpu.CopyFrom(zeroCounts.AsSpan(0, 1));
-            device.For(width, height, new MaskCountShader(seedScratch, countGpu, width, height));
+
+            pipelineHost.RecordChangeCount(
+                bgraGpu.AsReadOnly(), previousBgraGpu, seedScratch, countGpu, width, height);
+
             countGpu.CopyTo(counts.AsSpan(0, 1));
 
             if (counts[0] > (int)(pixelCount * IncrementalChangeCeiling))
@@ -354,26 +347,12 @@ namespace DirectionalColorKey
                 return false;
             }
 
-            device.For(width, height, new DilateHorizontalShader(seedScratch, dilateScratch, AdoptReach, width, height));
-            device.For(width, height, new DilateVerticalShader(dilateScratch, adoptMask, AdoptReach, width, height));
+            pipelineHost.RecordRegionSmooth(
+                rawDirections, scratchDirections, colorLabGpu, EnsurePreviousResultBuffer(),
+                seedScratch, dilateScratch, adoptMask, computeMask,
+                sigmaColorSq, AdoptReach, GuardReach, SmoothIterations, width, height);
 
-            device.For(width, height, new DilateHorizontalShader(adoptMask, dilateScratch, GuardReach, width, height));
-            device.For(width, height, new DilateVerticalShader(dilateScratch, computeMask, GuardReach, width, height));
-
-            var smoothSource = rawDirections;
-            var smoothTarget = scratchDirections;
-
-            for (int iteration = 0; iteration < SmoothIterations; iteration++)
-            {
-                device.For(width, height, new RegionDirectionSmoothShader(
-                    smoothSource, colorLabGpu, smoothTarget, computeMask, sigmaColorSq, width, height));
-                (smoothSource, smoothTarget) = (smoothTarget, smoothSource);
-            }
-
-            device.For(width, height, new AdoptRegionShader(
-                smoothSource, EnsurePreviousResultBuffer(), adoptMask, width, height));
-
-            smoothedDirections = smoothSource;
+            smoothedDirections = (SmoothIterations & 1) == 0 ? rawDirections : scratchDirections;
             return true;
         }
 
@@ -478,10 +457,10 @@ namespace DirectionalColorKey
 
             float projectionScale = ProjectionBins / ProjectionHistogramRange;
 
-            device.For(width, height, new ProjectionHistogramShader(
+            pipelineHost.RecordProjectionHistogram(
                 colorLabGpu, directionGpu, centerGpu, histogramGpu,
                 backgroundLab.X, backgroundLab.Y, backgroundLab.Z,
-                clusterCount, ProjectionBins, projectionScale, width, height));
+                clusterCount, ProjectionBins, projectionScale, width, height);
 
             histogramGpu.CopyTo(histogram.AsSpan(0, clusterCount * ProjectionBins));
 
