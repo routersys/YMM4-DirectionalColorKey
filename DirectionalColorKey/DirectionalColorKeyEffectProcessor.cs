@@ -31,6 +31,7 @@ namespace DirectionalColorKey
 		private int[]? sourceBuffer;
 		private int bufferPixelCount;
 
+		private readonly ComputeExternalQueueScheduler? scheduler;
 		private readonly DirectionalColorKeyInteropProvider? interopProvider;
 		private readonly ComputeInteropDomain? interopDomain;
 		private readonly DirectionalColorKeyResourceSet? resourceSet;
@@ -62,10 +63,16 @@ namespace DirectionalColorKey
 			if (analyzer is not null)
 				disposer.Collect(analyzer);
 
-			interopProvider = DirectionalColorKeyInteropProvider.TryCreate(devices, out var interopDevice);
+			var scheduler = ComputeExternalQueueScheduler.Create();
+			interopProvider = DirectionalColorKeyInteropProvider.TryCreate(devices, scheduler, out var interopDevice);
 
 			if (interopProvider is null || interopDevice is null)
+			{
+				scheduler.Dispose();
 				return;
+			}
+
+			this.scheduler = scheduler;
 
 			try
 			{
@@ -83,6 +90,7 @@ namespace DirectionalColorKey
 				resourceSet = null;
 				interopDomain = null;
 				interopProvider = null;
+				this.scheduler = null;
 			}
 		}
 
@@ -99,6 +107,7 @@ namespace DirectionalColorKey
 			resourceSet?.WaitForDisposal();
 			interopDomain?.Dispose();
 			interopProvider?.Dispose();
+			scheduler?.Dispose();
 		}
 
 		protected override ID2D1Image? CreateEffect(IGraphicsDevicesAndContext devices)

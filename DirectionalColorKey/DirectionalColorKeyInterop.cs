@@ -1,4 +1,3 @@
-using System.Threading;
 using Vortice.Direct2D1;
 using Vortice.Direct3D11;
 using Vortice.DXGI;
@@ -12,27 +11,6 @@ namespace DirectionalColorKey
         private readonly Action action = action;
 
         public void Dispose() => action();
-    }
-
-    internal sealed class DirectionalColorKeyQueueScheduler : ComputeExternalQueueScheduler
-    {
-        private int entered;
-
-        protected override void EnterCore()
-        {
-            if (Interlocked.CompareExchange(ref entered, 1, 0) != 0)
-                throw new InvalidOperationException("The external queue scheduler is busy or reentered.");
-        }
-
-        protected override void ExitCore()
-        {
-            if (Interlocked.Exchange(ref entered, 0) != 1)
-                throw new InvalidOperationException("The external queue scheduler exit invariant failed.");
-        }
-
-        protected override void DisposeCore()
-        {
-        }
     }
 
     internal sealed class DirectionalColorKeyExternalView : IDisposable
@@ -61,7 +39,7 @@ namespace DirectionalColorKey
         private readonly ID3D11Device5 device5;
         private readonly ID3D11DeviceContext4 context;
         private readonly ID2D1DeviceContext6 renderContext;
-        private readonly DirectionalColorKeyQueueScheduler scheduler;
+        private readonly ComputeExternalQueueScheduler scheduler;
         private readonly long adapterLuid;
 
         private ID3D11Fence? fence;
@@ -71,7 +49,7 @@ namespace DirectionalColorKey
             ID3D11Device5 device5,
             ID3D11DeviceContext4 context,
             ID2D1DeviceContext6 renderContext,
-            DirectionalColorKeyQueueScheduler scheduler,
+            ComputeExternalQueueScheduler scheduler,
             long adapterLuid)
         {
             this.device = device;
@@ -94,15 +72,19 @@ namespace DirectionalColorKey
 
         public ID2D1DeviceContext6 RenderContext => renderContext;
 
-        public static DirectionalColorKeyInteropProvider? TryCreate(IGraphicsDevicesAndContext devices, out GraphicsDevice? graphicsDevice)
+        public static DirectionalColorKeyInteropProvider? TryCreate(
+            IGraphicsDevicesAndContext devices,
+            ComputeExternalQueueScheduler scheduler,
+            out GraphicsDevice? graphicsDevice)
         {
+            ArgumentNullException.ThrowIfNull(scheduler);
+
             graphicsDevice = null;
 
             ID3D11Device1? device = null;
             ID3D11Device5? device5 = null;
             ID3D11DeviceContext4? context = null;
             ID2D1DeviceContext6? renderContext = null;
-            DirectionalColorKeyQueueScheduler? scheduler = null;
 
             try
             {
@@ -116,13 +98,10 @@ namespace DirectionalColorKey
                 context = devices.D3D.DeviceContext.QueryInterface<ID3D11DeviceContext4>();
                 renderContext = devices.D2D.Device.CreateDeviceContext(DeviceContextOptions.EnableMultithreadedOptimizations)
                     .QueryInterface<ID2D1DeviceContext6>();
-                scheduler = new DirectionalColorKeyQueueScheduler();
-
                 return new DirectionalColorKeyInteropProvider(device, device5, context, renderContext, scheduler, adapterLuid);
             }
             catch
             {
-                scheduler?.Dispose();
                 renderContext?.Dispose();
                 context?.Dispose();
                 device5?.Dispose();
@@ -195,7 +174,6 @@ namespace DirectionalColorKey
             context.Dispose();
             device5.Dispose();
             device.Dispose();
-            scheduler.Dispose();
         }
     }
 
