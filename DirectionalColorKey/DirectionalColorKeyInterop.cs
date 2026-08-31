@@ -1,4 +1,3 @@
-using System.Linq;
 using System.Threading;
 using Vortice.Direct2D1;
 using Vortice.Direct3D11;
@@ -108,13 +107,8 @@ namespace DirectionalColorKey
             try
             {
                 long adapterLuid = devices.DXGI.Adapter.Description.Luid;
-                string adapterLuidText = adapterLuid.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-                graphicsDevice = GraphicsDevice
-                    .QueryDevices(candidate => string.Equals(candidate.Luid.ToString(), adapterLuidText, StringComparison.Ordinal))
-                    .FirstOrDefault();
-
-                if (graphicsDevice is null)
+                if (!GraphicsDevice.TryGetDevice(new ExternalAdapterIdentity(adapterLuid), out graphicsDevice))
                     return null;
 
                 device = devices.D3D.Device.QueryInterface<ID3D11Device1>();
