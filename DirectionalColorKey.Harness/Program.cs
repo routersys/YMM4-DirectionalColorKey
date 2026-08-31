@@ -202,16 +202,16 @@ static int[] CreateTestImage(int width, int height)
 
             if (radius < 0.22f)
             {
-                r = (int)(220f * (1f - (radius * 2f)));
-                g = (int)(120f + (80f * v));
-                b = (int)(60f + (150f * u));
+                r = (int)(200f + (40f * u));
+                g = (int)(30f + (40f * v));
+                b = (int)(40f + (170f * u));
             }
             else if (radius < 0.28f)
             {
                 float blend = (radius - 0.22f) / 0.06f;
-                r = (int)((1f - blend) * 180f);
-                g = (int)(((1f - blend) * 140f) + (blend * 177f));
-                b = (int)(((1f - blend) * 90f) + (blend * 64f));
+                r = (int)((1f - blend) * 210f);
+                g = (int)(((1f - blend) * 50f) + (blend * 177f));
+                b = (int)(((1f - blend) * 120f) + (blend * 64f));
             }
             else
             {
