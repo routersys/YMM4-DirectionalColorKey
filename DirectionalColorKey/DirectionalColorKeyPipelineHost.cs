@@ -207,7 +207,6 @@ namespace DirectionalColorKey
             float backgroundSrgbR,
             float backgroundSrgbG,
             float backgroundSrgbB,
-            int reach,
             float sigmaLineSquared,
             int iterations,
             int width,
@@ -229,7 +228,7 @@ namespace DirectionalColorKey
                 context.For(width, height, new ForegroundPropagateShader(
                     source, bgra, srgbToLinear, target,
                     backgroundSrgbR, backgroundSrgbG, backgroundSrgbB,
-                    reach, sigmaLineSquared, width, height));
+                    sigmaLineSquared, width, height));
                 context.Barrier(target);
 
                 (source, target) = (target, source);

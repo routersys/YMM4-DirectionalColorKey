@@ -42,7 +42,6 @@ namespace DirectionalColorKey
         private const int AdoptReach = SmoothRadius * SmoothIterations;
         private const int GuardReach = SmoothRadius * SmoothIterations;
         private const float IncrementalChangeCeiling = 0.25f;
-        private const int PropagateReach = 4;
         private const int PropagateIterations = 16;
         private const float LineSigmaSquared = 0.1225f;
         private const int MaximumPendingSubmissions = 8;
@@ -269,7 +268,7 @@ namespace DirectionalColorKey
                 backgroundLab.X, backgroundLab.Y, backgroundLab.Z,
                 referencePerp,
                 backgroundSrgb.X, backgroundSrgb.Y, backgroundSrgb.Z,
-                PropagateReach, LineSigmaSquared, PropagateIterations,
+                LineSigmaSquared, PropagateIterations,
                 width, height);
 
             return (PropagateIterations & 1) == 0 ? foregroundSource : foregroundTarget;

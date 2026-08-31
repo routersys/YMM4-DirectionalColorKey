@@ -924,128 +924,6 @@ internal readonly partial struct ForegroundSeedShader(
 
 [ThreadGroupSize(DefaultThreadGroupSizes.XY)]
 [GeneratedComputeShaderDescriptor]
-internal readonly partial struct ForegroundPropagateShader(
-    ReadWriteBuffer<int> sourceForeground,
-    IReadOnlyBuffer<int> bgra,
-    IReadOnlyBuffer<float> srgbToLinear,
-    ReadWriteBuffer<int> targetForeground,
-    float backgroundR,
-    float backgroundG,
-    float backgroundB,
-    int reach,
-    float sigmaLineSq,
-    int width,
-    int height) : IComputeShader
-{
-    private readonly ReadWriteBuffer<int> sourceForeground = sourceForeground;
-    private readonly IReadOnlyBuffer<int> bgra = bgra;
-    private readonly IReadOnlyBuffer<float> srgbToLinear = srgbToLinear;
-    private readonly ReadWriteBuffer<int> targetForeground = targetForeground;
-    private readonly float backgroundR = backgroundR;
-    private readonly float backgroundG = backgroundG;
-    private readonly float backgroundB = backgroundB;
-    private readonly int reach = reach;
-    private readonly float sigmaLineSq = sigmaLineSq;
-    private readonly int width = width;
-    private readonly int height = height;
-
-    public void Execute()
-    {
-        int x = ThreadIds.X;
-        int y = ThreadIds.Y;
-        if (x >= width || y >= height)
-            return;
-
-        int index = y * width + x;
-
-        int packed = bgra[index];
-        int a = (packed >> 24) & 0xFF;
-
-        if (a == 0)
-        {
-            targetForeground[index] = 0;
-            return;
-        }
-
-        float bgRl = backgroundR <= 0.04045f ? backgroundR / 12.92f : Hlsl.Pow((backgroundR + 0.055f) / 1.055f, 2.4f);
-        float bgGl = backgroundG <= 0.04045f ? backgroundG / 12.92f : Hlsl.Pow((backgroundG + 0.055f) / 1.055f, 2.4f);
-        float bgBl = backgroundB <= 0.04045f ? backgroundB / 12.92f : Hlsl.Pow((backgroundB + 0.055f) / 1.055f, 2.4f);
-        float bgLenSq = bgRl * bgRl + bgGl * bgGl + bgBl * bgBl;
-
-        float invA = 1f / a;
-        float observedRs = Hlsl.Saturate(((packed >> 16) & 0xFF) * invA);
-        float observedGs = Hlsl.Saturate(((packed >> 8) & 0xFF) * invA);
-        float observedBs = Hlsl.Saturate(((packed >> 0) & 0xFF) * invA);
-
-        float observedR = observedRs <= 0.04045f ? observedRs / 12.92f : Hlsl.Pow((observedRs + 0.055f) / 1.055f, 2.4f);
-        float observedG = observedGs <= 0.04045f ? observedGs / 12.92f : Hlsl.Pow((observedGs + 0.055f) / 1.055f, 2.4f);
-        float observedB = observedBs <= 0.04045f ? observedBs / 12.92f : Hlsl.Pow((observedBs + 0.055f) / 1.055f, 2.4f);
-
-        float obr = observedR - bgRl;
-        float obg = observedG - bgGl;
-        float obb = observedB - bgBl;
-
-        int bestForeground = 0;
-        float bestPurity = -1f;
-
-        for (int dy = -reach; dy <= reach; dy++)
-        {
-            int sy = y + dy;
-            if (sy < 0 || sy >= height)
-                continue;
-
-            for (int dx = -reach; dx <= reach; dx++)
-            {
-                int sx = x + dx;
-                if (sx < 0 || sx >= width)
-                    continue;
-
-                int sIndex = sy * width + sx;
-                int f = sourceForeground[sIndex];
-                if (f == 0)
-                    continue;
-
-                float fr = srgbToLinear[(f >> 16) & 0xFF];
-                float fg = srgbToLinear[(f >> 8) & 0xFF];
-                float fb = srgbToLinear[(f >> 0) & 0xFF];
-
-                float dr = fr - bgRl;
-                float dg = fg - bgGl;
-                float db = fb - bgBl;
-                float dlen2 = dr * dr + dg * dg + db * db;
-                if (dlen2 < 1e-8f)
-                    continue;
-
-                float t = (obr * dr + obg * dg + obb * db) / dlen2;
-                float pr = obr - t * dr;
-                float pg = obg - t * dg;
-                float pb = obb - t * db;
-                float distSq = pr * pr + pg * pg + pb * pb;
-                if (distSq > sigmaLineSq * dlen2)
-                    continue;
-
-                float dotFB = fr * bgRl + fg * bgGl + fb * bgBl;
-                float purity = fr * fr + fg * fg + fb * fb - (bgLenSq > 1e-8f ? dotFB * dotFB / bgLenSq : 0f);
-                if (purity > bestPurity)
-                {
-                    bestPurity = purity;
-                    bestForeground = f;
-                }
-            }
-        }
-
-        if (bestPurity >= 0f)
-        {
-            targetForeground[index] = bestForeground;
-            return;
-        }
-
-        targetForeground[index] = 0;
-    }
-}
-
-[ThreadGroupSize(DefaultThreadGroupSizes.XY)]
-[GeneratedComputeShaderDescriptor]
 internal readonly partial struct SharedTextureToBufferShader(
     IReadWriteNormalizedTexture2D<float4> source,
     ReadWriteBuffer<int> bgra,
@@ -1102,5 +980,184 @@ internal readonly partial struct BufferToSharedTextureShader(
             ((packed >> 8) & 0xFF) / 255f,
             ((packed >> 0) & 0xFF) / 255f,
             ((packed >> 24) & 0xFF) / 255f);
+    }
+}
+
+internal static class ForegroundPropagateConstants
+{
+    public const int GroupSize = 8;
+    public const int Radius = 4;
+    public const int TileSize = GroupSize + Radius * 2;
+    public const int TileCount = TileSize * TileSize;
+}
+
+[ThreadGroupSize(DefaultThreadGroupSizes.XY)]
+[GeneratedComputeShaderDescriptor]
+internal readonly partial struct ForegroundPropagateShader(
+    ReadWriteBuffer<int> sourceForeground,
+    IReadOnlyBuffer<int> bgra,
+    IReadOnlyBuffer<float> srgbToLinear,
+    ReadWriteBuffer<int> targetForeground,
+    float backgroundR,
+    float backgroundG,
+    float backgroundB,
+    float sigmaLineSq,
+    int width,
+    int height) : IComputeShader
+{
+    private readonly ReadWriteBuffer<int> sourceForeground = sourceForeground;
+    private readonly IReadOnlyBuffer<int> bgra = bgra;
+    private readonly IReadOnlyBuffer<float> srgbToLinear = srgbToLinear;
+    private readonly ReadWriteBuffer<int> targetForeground = targetForeground;
+    private readonly float backgroundR = backgroundR;
+    private readonly float backgroundG = backgroundG;
+    private readonly float backgroundB = backgroundB;
+    private readonly float sigmaLineSq = sigmaLineSq;
+    private readonly int width = width;
+    private readonly int height = height;
+
+    [GroupShared(ForegroundPropagateConstants.TileCount)]
+    private static readonly int[] foregroundTile = null!;
+    [GroupShared(ForegroundPropagateConstants.TileCount * 3)]
+    private static readonly float[] deltaTile = null!;
+    [GroupShared(ForegroundPropagateConstants.TileCount)]
+    private static readonly float[] lengthTile = null!;
+    [GroupShared(ForegroundPropagateConstants.TileCount)]
+    private static readonly float[] purityTile = null!;
+
+    public void Execute()
+    {
+        int x = ThreadIds.X;
+        int y = ThreadIds.Y;
+
+        float bgRl = backgroundR <= 0.04045f ? backgroundR / 12.92f : Hlsl.Pow((backgroundR + 0.055f) / 1.055f, 2.4f);
+        float bgGl = backgroundG <= 0.04045f ? backgroundG / 12.92f : Hlsl.Pow((backgroundG + 0.055f) / 1.055f, 2.4f);
+        float bgBl = backgroundB <= 0.04045f ? backgroundB / 12.92f : Hlsl.Pow((backgroundB + 0.055f) / 1.055f, 2.4f);
+        float bgLenSq = bgRl * bgRl + bgGl * bgGl + bgBl * bgBl;
+
+        int originX = x - GroupIds.X - ForegroundPropagateConstants.Radius;
+        int originY = y - GroupIds.Y - ForegroundPropagateConstants.Radius;
+
+        for (int slot = GroupIds.Index; slot < ForegroundPropagateConstants.TileCount; slot += GroupSize.Count)
+        {
+            int localY = slot / ForegroundPropagateConstants.TileSize;
+            int localX = slot - localY * ForegroundPropagateConstants.TileSize;
+            int sampleX = originX + localX;
+            int sampleY = originY + localY;
+            int tileTriple = slot * 3;
+
+            int sample = 0;
+            if (sampleX >= 0 && sampleX < width && sampleY >= 0 && sampleY < height)
+                sample = sourceForeground[sampleY * width + sampleX];
+
+            foregroundTile[slot] = sample;
+
+            if (sample == 0)
+            {
+                deltaTile[tileTriple + 0] = 0f;
+                deltaTile[tileTriple + 1] = 0f;
+                deltaTile[tileTriple + 2] = 0f;
+                lengthTile[slot] = 0f;
+                purityTile[slot] = 0f;
+                continue;
+            }
+
+            float fr = srgbToLinear[(sample >> 16) & 0xFF];
+            float fg = srgbToLinear[(sample >> 8) & 0xFF];
+            float fb = srgbToLinear[(sample >> 0) & 0xFF];
+
+            float dr = fr - bgRl;
+            float dg = fg - bgGl;
+            float db = fb - bgBl;
+
+            deltaTile[tileTriple + 0] = dr;
+            deltaTile[tileTriple + 1] = dg;
+            deltaTile[tileTriple + 2] = db;
+            lengthTile[slot] = dr * dr + dg * dg + db * db;
+
+            float dotFB = fr * bgRl + fg * bgGl + fb * bgBl;
+            purityTile[slot] = fr * fr + fg * fg + fb * fb - (bgLenSq > 1e-8f ? dotFB * dotFB / bgLenSq : 0f);
+        }
+
+        Hlsl.GroupMemoryBarrierWithGroupSync();
+
+        if (x >= width || y >= height)
+            return;
+
+        int index = y * width + x;
+
+        int packed = bgra[index];
+        int a = (packed >> 24) & 0xFF;
+
+        if (a == 0)
+        {
+            targetForeground[index] = 0;
+            return;
+        }
+
+        float invA = 1f / a;
+        float observedRs = Hlsl.Saturate(((packed >> 16) & 0xFF) * invA);
+        float observedGs = Hlsl.Saturate(((packed >> 8) & 0xFF) * invA);
+        float observedBs = Hlsl.Saturate(((packed >> 0) & 0xFF) * invA);
+
+        float observedR = observedRs <= 0.04045f ? observedRs / 12.92f : Hlsl.Pow((observedRs + 0.055f) / 1.055f, 2.4f);
+        float observedG = observedGs <= 0.04045f ? observedGs / 12.92f : Hlsl.Pow((observedGs + 0.055f) / 1.055f, 2.4f);
+        float observedB = observedBs <= 0.04045f ? observedBs / 12.92f : Hlsl.Pow((observedBs + 0.055f) / 1.055f, 2.4f);
+
+        float obr = observedR - bgRl;
+        float obg = observedG - bgGl;
+        float obb = observedB - bgBl;
+
+        int bestForeground = 0;
+        float bestPurity = -1f;
+
+        int centerLocalX = GroupIds.X + ForegroundPropagateConstants.Radius;
+        int centerLocalY = GroupIds.Y + ForegroundPropagateConstants.Radius;
+
+        for (int dy = -ForegroundPropagateConstants.Radius; dy <= ForegroundPropagateConstants.Radius; dy++)
+        {
+            int localY = centerLocalY + dy;
+
+            for (int dx = -ForegroundPropagateConstants.Radius; dx <= ForegroundPropagateConstants.Radius; dx++)
+            {
+                int slot = localY * ForegroundPropagateConstants.TileSize + centerLocalX + dx;
+
+                int f = foregroundTile[slot];
+                if (f == 0)
+                    continue;
+
+                float dlen2 = lengthTile[slot];
+                if (dlen2 < 1e-8f)
+                    continue;
+
+                int tileTriple = slot * 3;
+                float dr = deltaTile[tileTriple + 0];
+                float dg = deltaTile[tileTriple + 1];
+                float db = deltaTile[tileTriple + 2];
+
+                float t = (obr * dr + obg * dg + obb * db) / dlen2;
+                float pr = obr - t * dr;
+                float pg = obg - t * dg;
+                float pb = obb - t * db;
+                float distSq = pr * pr + pg * pg + pb * pb;
+                if (distSq > sigmaLineSq * dlen2)
+                    continue;
+
+                float purity = purityTile[slot];
+                if (purity > bestPurity)
+                {
+                    bestPurity = purity;
+                    bestForeground = f;
+                }
+            }
+        }
+
+        if (bestPurity >= 0f)
+        {
+            targetForeground[index] = bestForeground;
+            return;
+        }
+
+        targetForeground[index] = 0;
     }
 }
