@@ -56,6 +56,9 @@ public sealed class DirectionalColorKeyAnalyzerTests
         return direction / direction.Length();
     }
 
+    private const int ForegroundPixel = unchecked((int)0xFFFF0000);
+    private const int BackgroundPixel = unchecked((int)0xFF00FF00);
+
     private static int[] CreateImage(int width, int height)
     {
         int[] pixels = new int[width * height];
@@ -66,9 +69,7 @@ public sealed class DirectionalColorKeyAnalyzerTests
             {
                 bool foreground = x >= width / 4 && x < width * 3 / 4 && y >= height / 4 && y < height * 3 / 4;
 
-                pixels[(y * width) + x] = foreground
-                    ? unchecked((int)0xFFC83C28)
-                    : unchecked((int)0xFF00FF00);
+                pixels[(y * width) + x] = foreground ? ForegroundPixel : BackgroundPixel;
             }
         }
 
@@ -132,7 +133,7 @@ public sealed class DirectionalColorKeyAnalyzerTests
     }
 
     [Fact]
-    public void ForegroundFieldSeparatesForegroundFromBackground()
+    public void ForegroundFieldRecoversTheForegroundColor()
     {
         using var analyzer = DirectionalColorKeyAnalyzer.TryCreate();
         if (analyzer is null) { Assert.Skip("Direct3D 12 is unavailable."); return; }
@@ -149,9 +150,8 @@ public sealed class DirectionalColorKeyAnalyzerTests
         Assert.Equal(Width * Height, field.Length);
 
         int centerIndex = ((Height / 2) * Width) + (Width / 2);
-        int cornerIndex = 0;
 
-        Assert.NotEqual(field[centerIndex], field[cornerIndex]);
+        Assert.Equal(ForegroundPixel, field[centerIndex]);
     }
 
     [Fact]
