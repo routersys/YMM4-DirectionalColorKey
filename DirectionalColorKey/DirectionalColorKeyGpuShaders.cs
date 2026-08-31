@@ -1024,11 +1024,18 @@ internal readonly partial struct ForegroundPropagateShader(
     private static readonly float[] lengthTile = null!;
     [GroupShared(ForegroundPropagateConstants.TileCount)]
     private static readonly float[] purityTile = null!;
+    [GroupShared(1)]
+    private static readonly int[] tileHasCandidate = null!;
 
     public void Execute()
     {
         int x = ThreadIds.X;
         int y = ThreadIds.Y;
+
+        if (GroupIds.Index == 0)
+            tileHasCandidate[0] = 0;
+
+        Hlsl.GroupMemoryBarrierWithGroupSync();
 
         float bgRl = backgroundR <= 0.04045f ? backgroundR / 12.92f : Hlsl.Pow((backgroundR + 0.055f) / 1.055f, 2.4f);
         float bgGl = backgroundG <= 0.04045f ? backgroundG / 12.92f : Hlsl.Pow((backgroundG + 0.055f) / 1.055f, 2.4f);
@@ -1051,6 +1058,9 @@ internal readonly partial struct ForegroundPropagateShader(
                 sample = sourceForeground[sampleY * width + sampleX];
 
             foregroundTile[slot] = sample;
+
+            if (sample != 0)
+                tileHasCandidate[0] = 1;
 
             if (sample == 0)
             {
@@ -1085,6 +1095,12 @@ internal readonly partial struct ForegroundPropagateShader(
             return;
 
         int index = y * width + x;
+
+        if (tileHasCandidate[0] == 0)
+        {
+            targetForeground[index] = 0;
+            return;
+        }
 
         int packed = bgra[index];
         int a = (packed >> 24) & 0xFF;
