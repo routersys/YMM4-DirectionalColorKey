@@ -1002,6 +1002,13 @@ internal readonly partial struct BufferToSharedTextureShader(
     }
 }
 
+internal static class PremultipliedLinearConstants
+{
+    public const int AlphaCount = 256;
+    public const int ChannelCount = 256;
+    public const int TableLength = AlphaCount * ChannelCount;
+}
+
 internal static class ClusterAccumulateConstants
 {
     public const int MaxClusters = 4;
@@ -1022,6 +1029,7 @@ internal readonly partial struct ForegroundPropagateShader(
     ReadWriteBuffer<int> sourceForeground,
     IReadOnlyBuffer<int> bgra,
     IReadOnlyBuffer<float> srgbToLinear,
+    IReadOnlyBuffer<float> premultipliedLinear,
     ReadWriteBuffer<int> targetForeground,
     float backgroundR,
     float backgroundG,
@@ -1033,6 +1041,7 @@ internal readonly partial struct ForegroundPropagateShader(
     private readonly ReadWriteBuffer<int> sourceForeground = sourceForeground;
     private readonly IReadOnlyBuffer<int> bgra = bgra;
     private readonly IReadOnlyBuffer<float> srgbToLinear = srgbToLinear;
+    private readonly IReadOnlyBuffer<float> premultipliedLinear = premultipliedLinear;
     private readonly ReadWriteBuffer<int> targetForeground = targetForeground;
     private readonly float backgroundR = backgroundR;
     private readonly float backgroundG = backgroundG;
@@ -1136,14 +1145,10 @@ internal readonly partial struct ForegroundPropagateShader(
             return;
         }
 
-        float invA = 1f / a;
-        float observedRs = Hlsl.Saturate(((packed >> 16) & 0xFF) * invA);
-        float observedGs = Hlsl.Saturate(((packed >> 8) & 0xFF) * invA);
-        float observedBs = Hlsl.Saturate(((packed >> 0) & 0xFF) * invA);
-
-        float observedR = observedRs <= 0.04045f ? observedRs / 12.92f : Hlsl.Pow((observedRs + 0.055f) / 1.055f, 2.4f);
-        float observedG = observedGs <= 0.04045f ? observedGs / 12.92f : Hlsl.Pow((observedGs + 0.055f) / 1.055f, 2.4f);
-        float observedB = observedBs <= 0.04045f ? observedBs / 12.92f : Hlsl.Pow((observedBs + 0.055f) / 1.055f, 2.4f);
+        int tableBase = a << 8;
+        float observedR = premultipliedLinear[tableBase + ((packed >> 16) & 0xFF)];
+        float observedG = premultipliedLinear[tableBase + ((packed >> 8) & 0xFF)];
+        float observedB = premultipliedLinear[tableBase + ((packed >> 0) & 0xFF)];
 
         float obr = observedR - bgRl;
         float obg = observedG - bgGl;
@@ -1200,5 +1205,34 @@ internal readonly partial struct ForegroundPropagateShader(
         }
 
         targetForeground[index] = 0;
+    }
+}
+
+[ThreadGroupSize(DefaultThreadGroupSizes.X)]
+[GeneratedComputeShaderDescriptor]
+internal readonly partial struct PremultipliedLinearTableShader(
+    ReadWriteBuffer<float> table) : IComputeShader
+{
+    private readonly ReadWriteBuffer<float> table = table;
+
+    public void Execute()
+    {
+        int index = ThreadIds.X;
+        if (index >= PremultipliedLinearConstants.TableLength)
+            return;
+
+        int a = index >> 8;
+        int channel = index & 0xFF;
+
+        if (a == 0)
+        {
+            table[index] = 0f;
+            return;
+        }
+
+        float invA = 1f / a;
+        float straight = Hlsl.Saturate(channel * invA);
+
+        table[index] = straight <= 0.04045f ? straight / 12.92f : Hlsl.Pow((straight + 0.055f) / 1.055f, 2.4f);
     }
 }

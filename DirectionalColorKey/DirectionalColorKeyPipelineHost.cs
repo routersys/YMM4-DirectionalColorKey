@@ -18,6 +18,18 @@ namespace DirectionalColorKey
         }
 
         [ComputePipeline]
+        private void RecordPremultipliedLinearTable(
+            in ComputeContext context,
+            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<float> table,
+            int length)
+        {
+            _ = device;
+
+            context.For(length, new PremultipliedLinearTableShader(table));
+            context.Barrier(table);
+        }
+
+        [ComputePipeline]
         private void RecordDisplacementField(
             in ComputeContext context,
             [ComputeResource(ComputeResourceAccess.Read)] IReadOnlyBuffer<int> bgra,
@@ -198,6 +210,7 @@ namespace DirectionalColorKey
             [ComputeResource(ComputeResourceAccess.Read)] IReadOnlyBuffer<int> bgra,
             [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<float> colorLab,
             [ComputeResource(ComputeResourceAccess.Read)] IReadOnlyBuffer<float> srgbToLinear,
+            [ComputeResource(ComputeResourceAccess.Read)] IReadOnlyBuffer<float> premultipliedLinear,
             [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<int> foregroundA,
             [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<int> foregroundB,
             float backgroundLabX,
@@ -226,7 +239,7 @@ namespace DirectionalColorKey
             for (int iteration = 0; iteration < iterations; iteration++)
             {
                 context.For(width, height, new ForegroundPropagateShader(
-                    source, bgra, srgbToLinear, target,
+                    source, bgra, srgbToLinear, premultipliedLinear, target,
                     backgroundSrgbR, backgroundSrgbG, backgroundSrgbB,
                     sigmaLineSquared, width, height));
                 context.Barrier(target);

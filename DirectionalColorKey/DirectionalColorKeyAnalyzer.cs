@@ -24,6 +24,7 @@ namespace DirectionalColorKey
         private ReadWriteBuffer<int>? foregroundBufferA;
         private ReadWriteBuffer<int>? foregroundBufferB;
         private ReadWriteBuffer<float>? srgbToLinearBuffer;
+        private ReadWriteBuffer<float>? premultipliedLinearBuffer;
         private int[]? foregroundReadback;
 
         private int width;
@@ -262,9 +263,10 @@ namespace DirectionalColorKey
             var foregroundSource = EnsureForegroundBufferA();
             var foregroundTarget = EnsureForegroundBufferB();
             var srgbToLinear = EnsureSrgbToLinearBuffer();
+            var premultipliedLinear = EnsurePremultipliedLinearBuffer();
 
             pipelineHost.RecordForegroundField(
-                bgraGpu.AsReadOnly(), colorLabGpu, srgbToLinear, foregroundSource, foregroundTarget,
+                bgraGpu.AsReadOnly(), colorLabGpu, srgbToLinear, premultipliedLinear, foregroundSource, foregroundTarget,
                 backgroundLab.X, backgroundLab.Y, backgroundLab.Z,
                 referencePerp,
                 backgroundSrgb.X, backgroundSrgb.Y, backgroundSrgb.Z,
@@ -315,6 +317,16 @@ namespace DirectionalColorKey
                 pipelineHost.RecordSrgbToLinearTable(srgbToLinearBuffer, SrgbTableLength);
             }
             return srgbToLinearBuffer.AsReadOnly();
+        }
+
+        private IReadOnlyBuffer<float> EnsurePremultipliedLinearBuffer()
+        {
+            if (premultipliedLinearBuffer is null)
+            {
+                premultipliedLinearBuffer = device.AllocateReadWriteBuffer<float>(PremultipliedLinearConstants.TableLength);
+                pipelineHost.RecordPremultipliedLinearTable(premultipliedLinearBuffer, PremultipliedLinearConstants.TableLength);
+            }
+            return premultipliedLinearBuffer.AsReadOnly();
         }
 
         private bool TryRunIncrementalSmooth(
@@ -681,6 +693,8 @@ namespace DirectionalColorKey
             DisposeFrameBuffers();
             srgbToLinearBuffer?.Dispose();
             srgbToLinearBuffer = null;
+            premultipliedLinearBuffer?.Dispose();
+            premultipliedLinearBuffer = null;
             centerBuffer?.Dispose();
             accumBuffer?.Dispose();
             countBuffer?.Dispose();
