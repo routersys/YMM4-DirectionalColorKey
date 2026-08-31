@@ -97,7 +97,7 @@ jobs:
 
           New-Item -ItemType Directory -Path $stageRoot -Force | Out-Null
 
-          Copy-Item "$outDir/DirectionalColorKey.dll" "$stageRoot/"
+          Copy-Item "$outDir/plugin/DirectionalColorKey.dll" "$stageRoot/"
 
           foreach ($lang in @("ar-sa", "en-us", "es-es", "id-id", "ko-kr", "zh-cn", "zh-tw")) {
             $src = "$outDir/$lang"
