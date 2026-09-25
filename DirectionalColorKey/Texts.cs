@@ -1,9 +1,8 @@
 using YukkuriMovieMaker.Generator;
 
-namespace DirectionalColorKey
+namespace DirectionalColorKey;
+
+[AutoGenLocalizer]
+partial class Texts
 {
-    [AutoGenLocalizer]
-    partial class Texts
-    {
-    }
 }
