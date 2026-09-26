@@ -1,265 +1,328 @@
-using System.Diagnostics;
-using System.Numerics;
-using DirectionalColorKey;
+using System.IO;
+using System.IO.Packaging;
+using System.Security.Cryptography;
+using DirectionalColorKey.Harness;
+using SharpGen.Runtime;
 
-using var analyzer = DirectionalColorKeyAnalyzer.TryCreate();
-if (analyzer is null)
+const int CanvasWidth = 1280;
+const int CanvasHeight = 720;
+const int ImageWidth = 640;
+const int ImageHeight = 480;
+const int FullHdWidth = 1920;
+const int FullHdHeight = 1080;
+
+_ = PackUriHelper.UriSchemePack;
+
+HarnessArguments arguments;
+try
 {
-    Console.WriteLine("Direct3D 12 is unavailable.");
-    return 1;
+    arguments = HarnessArguments.Parse(args);
+}
+catch (HarnessException exception)
+{
+    Console.Error.WriteLine(exception.Message);
+    Console.Error.WriteLine(HarnessArguments.Usage);
+    return 2;
 }
 
-string library = typeof(GraphicsDevice).Assembly.GetName().Name ?? "unknown";
-string version = typeof(GraphicsDevice).Assembly.GetName().Version?.ToString() ?? "unknown";
-
-Console.WriteLine($"library: {library} {version}");
-Console.WriteLine($"device: {GraphicsDevice.GetDefault()}");
-Console.WriteLine();
-
-Vector3 backgroundSrgb = new(0f, 177f / 255f, 64f / 255f);
-Vector3 backgroundLab = ToOklab(ToLinear(backgroundSrgb));
-Vector3 whiteDirection = ComputeWhiteDirection(backgroundLab);
-
-if (args.Length >= 2 && args[0] is "dump")
+try
 {
-    DumpForegroundField(analyzer, args[1], backgroundLab, backgroundSrgb, whiteDirection);
+    if (arguments.Mode == HarnessMode.Compare)
+        return Compare(arguments.Before!, arguments.After!);
 
+    var outputDirectory = arguments.OutputDirectory ?? Path.Combine(AppContext.BaseDirectory, "harness-output");
+    if (arguments.Mode == HarnessMode.Benchmark)
+    {
+        if (arguments.Input is { } benchmarkInput)
+        {
+            Benchmark(HarnessImage.Load(benchmarkInput));
+        }
+        else
+        {
+            Benchmark(HarnessImage.Synthetic(CanvasWidth, CanvasHeight));
+            Benchmark(HarnessImage.Synthetic(FullHdWidth, FullHdHeight));
+        }
+
+        return 0;
+    }
+
+    var image = arguments.Input is { } input ? HarnessImage.Load(input) : HarnessImage.Synthetic(ImageWidth, ImageHeight);
+    using var renderer = new HarnessRenderer(CanvasWidth, CanvasHeight, image);
+    return arguments.Mode switch
+    {
+        HarnessMode.Golden => WriteGolden(renderer, image),
+        HarnessMode.Verify => Verify(renderer, image),
+        HarnessMode.Transition => Transition(renderer, outputDirectory),
+        _ => Render(renderer, outputDirectory),
+    };
+}
+catch (Exception exception) when (exception is HarnessException or SharpGenException)
+{
+    Console.Error.WriteLine(exception.Message);
+    return 2;
+}
+
+static int Render(HarnessRenderer renderer, string outputDirectory)
+{
+    Directory.CreateDirectory(outputDirectory);
+    var failures = 0;
+    var cases = Evaluate(renderer, (golden, files, frames) =>
+    {
+        Console.WriteLine($"{golden.Name}: {golden.Hash}");
+        for (var index = 0; index < files.Length; index++)
+        {
+            HarnessImage.Save(Path.Combine(outputDirectory, files[index]), frames[index], renderer.CanvasWidth, renderer.CanvasHeight);
+            var opaque = CountOpaque(frames[index]);
+            Console.WriteLine($"  {files[index]} opaque={opaque}");
+            if (opaque == 0)
+            {
+                Console.Error.WriteLine($"{files[index]}: 出力が完全に透明です。");
+                failures++;
+            }
+        }
+    });
+    Console.WriteLine($"-> {outputDirectory}");
+    return failures + CountDuplicates(cases) == 0 ? 0 : 1;
+}
+
+static int WriteGolden(HarnessRenderer renderer, HarnessImage image)
+{
+    var cases = Evaluate(renderer, null);
+    if (CountDuplicates(cases) != 0)
+        return 1;
+    if (cases.Count == 0)
+        Console.Error.WriteLine("ケースがありません。HarnessCases に書き足してください。");
+
+    var golden = new Golden(renderer.Adapter, renderer.Driver, image.Identity, $"{renderer.CanvasWidth}x{renderer.CanvasHeight}", cases);
+    var path = Golden.PathFor(image);
+    golden.Save(path);
+    Console.WriteLine($"adapter: {golden.Adapter} (driver {golden.Driver})");
+    Console.WriteLine($"input: {golden.Input}");
+    foreach (var (name, _, hash) in cases)
+        Console.WriteLine($"{name}: {hash}");
+    Console.WriteLine($"-> {path}");
     return 0;
 }
 
-if (args.Length >= 3 && args[0] is "probe")
+static int Verify(HarnessRenderer renderer, HarnessImage image)
 {
-    int probeWidth = int.Parse(args[1]);
-    int probeHeight = int.Parse(args[2]);
-    int[] probeImage = CreateTestImage(probeWidth, probeHeight);
-
-    RunAnalyze(analyzer, probeImage, probeWidth, probeHeight, backgroundLab, whiteDirection, 4, DirectionalColorKeyScaleMode.Physical, true);
-    _ = analyzer.BuildForegroundField(probeWidth, probeHeight, backgroundLab, backgroundSrgb);
-
-    Console.WriteLine($"probe {probeWidth}x{probeHeight} ok");
-
-    return 0;
-}
-
-(int Width, int Height)[] sizes = [(1280, 720), (1920, 1080), (3840, 2160)];
-
-Console.WriteLine("size          clusters  mode        analyze(ms)  foreground(ms)  total(ms)");
-Console.WriteLine("------------  --------  ----------  -----------  --------------  ---------");
-
-foreach ((int width, int height) in sizes)
-{
-    int[] image = CreateTestImage(width, height);
-
-    foreach (int clusters in new[] { 1, 4 })
+    var golden = Golden.Load(Golden.PathFor(image));
+    var canvas = $"{renderer.CanvasWidth}x{renderer.CanvasHeight}";
+    if (golden.Input != image.Identity || golden.Canvas != canvas)
     {
-        foreach (DirectionalColorKeyScaleMode mode in new[] { DirectionalColorKeyScaleMode.Physical, DirectionalColorKeyScaleMode.Foreground })
-        {
-            Measure(analyzer, image, width, height, backgroundLab, backgroundSrgb, whiteDirection, clusters, mode, out double analyze, out double foreground);
-
-            Console.WriteLine($"{width,5}x{height,-6}  {clusters,8}  {mode,-10}  {analyze,11:F2}  {foreground,14:F2}  {analyze + foreground,9:F2}");
-        }
+        Console.Error.WriteLine($"基準値は入力 {golden.Input} とキャンバス {golden.Canvas} で書かれています。今回は入力 {image.Identity} とキャンバス {canvas} です。");
+        return 1;
     }
-}
 
-return 0;
+    if (golden.Adapter != renderer.Adapter || golden.Driver != renderer.Driver)
+        Console.Error.WriteLine($"基準値は {golden.Adapter} (driver {golden.Driver}) で書かれています。今回は {renderer.Adapter} (driver {renderer.Driver}) です。画素の差はこの違いから来ることがあります。");
 
-// 等価性の照合用。前景場をそのままバイト列として書き出す。
-static void DumpForegroundField(
-    DirectionalColorKeyAnalyzer analyzer,
-    string path,
-    Vector3 backgroundLab,
-    Vector3 backgroundSrgb,
-    Vector3 whiteDirection)
-{
-    using FileStream stream = File.Create(path);
-    using BinaryWriter writer = new(stream);
-
-    foreach ((int width, int height) in new[] { (320, 176), (640, 360), (1280, 720) })
+    var failures = 0;
+    var current = Evaluate(renderer, null).ToDictionary(item => item.Name, StringComparer.Ordinal);
+    if (golden.Cases.Count == 0 && current.Count == 0)
+        Console.Error.WriteLine("ケースがありません。HarnessCases に書き足してください。");
+    foreach (var (name, frames, hash) in golden.Cases)
     {
-        int[] image = CreateTestImage(width, height);
-
-        foreach (int clusters in new[] { 1, 4 })
+        if (!current.Remove(name, out var actual))
         {
-            foreach (DirectionalColorKeyScaleMode mode in new[] { DirectionalColorKeyScaleMode.Physical, DirectionalColorKeyScaleMode.Foreground })
-            {
-                RunAnalyze(analyzer, image, width, height, backgroundLab, whiteDirection, clusters, mode, true);
-
-                ReadOnlySpan<int> field = analyzer.BuildForegroundField(width, height, backgroundLab, backgroundSrgb);
-
-                for (int i = 0; i < field.Length; i++)
-                    writer.Write(field[i]);
-
-                for (int c = 0; c < analyzer.ClusterCount; c++)
-                {
-                    Vector3 center = analyzer.GetCenter(c);
-
-                    writer.Write(center.X);
-                    writer.Write(center.Y);
-                    writer.Write(center.Z);
-                    writer.Write(analyzer.GetLambda(c));
-                }
-            }
+            Console.Error.WriteLine($"{name}: ケースがありません。基準値を書き直してください。");
+            failures++;
+        }
+        else if (!actual.Frames.SequenceEqual(frames))
+        {
+            Console.Error.WriteLine($"{name}: フレームが違います。基準値 [{string.Join(", ", frames)}]、今回 [{string.Join(", ", actual.Frames)}]。基準値を書き直してください。");
+            failures++;
+        }
+        else if (actual.Hash != hash)
+        {
+            Console.Error.WriteLine($"{name}: 一致しません。基準値 {hash}、今回 {actual.Hash}");
+            failures++;
+        }
+        else
+        {
+            Console.WriteLine($"{name}: 一致");
         }
     }
 
-    Console.WriteLine($"wrote {path}");
-}
-
-static void Measure(
-    DirectionalColorKeyAnalyzer analyzer,
-    int[] image,
-    int width,
-    int height,
-    Vector3 backgroundLab,
-    Vector3 backgroundSrgb,
-    Vector3 whiteDirection,
-    int clusters,
-    DirectionalColorKeyScaleMode mode,
-    out double analyzeMilliseconds,
-    out double foregroundMilliseconds)
-{
-    const int WarmupFrames = 3;
-    const int MeasuredFrames = 11;
-
-    for (int frame = 0; frame < WarmupFrames; frame++)
+    foreach (var name in current.Keys)
     {
-        RunAnalyze(analyzer, image, width, height, backgroundLab, whiteDirection, clusters, mode, frame == 0);
-        _ = analyzer.BuildForegroundField(width, height, backgroundLab, backgroundSrgb);
+        Console.Error.WriteLine($"{name}: 基準値にありません。基準値を書き直してください。");
+        failures++;
     }
 
-    double[] analyzeSamples = new double[MeasuredFrames];
-    double[] foregroundSamples = new double[MeasuredFrames];
-
-    for (int frame = 0; frame < MeasuredFrames; frame++)
-    {
-        Stopwatch stopwatch = Stopwatch.StartNew();
-
-        RunAnalyze(analyzer, image, width, height, backgroundLab, whiteDirection, clusters, mode, false);
-
-        stopwatch.Stop();
-        analyzeSamples[frame] = stopwatch.Elapsed.TotalMilliseconds;
-
-        stopwatch.Restart();
-
-        _ = analyzer.BuildForegroundField(width, height, backgroundLab, backgroundSrgb);
-
-        stopwatch.Stop();
-        foregroundSamples[frame] = stopwatch.Elapsed.TotalMilliseconds;
-    }
-
-    Array.Sort(analyzeSamples);
-    Array.Sort(foregroundSamples);
-
-    analyzeMilliseconds = analyzeSamples[MeasuredFrames / 2];
-    foregroundMilliseconds = foregroundSamples[MeasuredFrames / 2];
+    return failures == 0 ? 0 : 1;
 }
 
-static void RunAnalyze(
-    DirectionalColorKeyAnalyzer analyzer,
-    int[] image,
-    int width,
-    int height,
-    Vector3 backgroundLab,
-    Vector3 whiteDirection,
-    int clusters,
-    DirectionalColorKeyScaleMode mode,
-    bool resetLambdaSmoothing)
+static int Transition(HarnessRenderer renderer, string outputDirectory)
 {
-    analyzer.Analyze(
-        image.AsSpan(0, width * height),
-        width,
-        height,
-        backgroundLab,
-        whiteDirection,
-        clusters,
-        0.02f,
-        0.08f,
-        mode,
-        0.98f,
-        0.5f,
-        static (keyDirection, floorValue) => MathF.Max(floorValue, 0.5f),
-        resetLambdaSmoothing);
-}
-
-static int[] CreateTestImage(int width, int height)
-{
-    int[] pixels = new int[width * height];
-
-    for (int y = 0; y < height; y++)
+    var failures = 0;
+    foreach (var (name, create, change, frame) in HarnessCases.Transitions())
     {
-        for (int x = 0; x < width; x++)
+        var (direct, transitioned) = renderer.RenderTransition(create, change, frame);
+        var difference = ImageComparison.Of(direct, transitioned, renderer.CanvasWidth, renderer.CanvasHeight);
+        if (difference.IsEmpty)
         {
-            float u = (float)x / width;
-            float v = (float)y / height;
+            Console.WriteLine($"{name}: 一致");
+            continue;
+        }
 
-            float dx = u - 0.5f;
-            float dy = v - 0.5f;
-            float radius = MathF.Sqrt((dx * dx) + (dy * dy));
+        failures++;
+        Directory.CreateDirectory(outputDirectory);
+        HarnessImage.Save(Path.Combine(outputDirectory, name + "-direct.png"), direct, renderer.CanvasWidth, renderer.CanvasHeight);
+        HarnessImage.Save(Path.Combine(outputDirectory, name + "-transitioned.png"), transitioned, renderer.CanvasWidth, renderer.CanvasHeight);
+        Console.Error.WriteLine($"{name}: {difference}。設定を変えた後の描画が作り直した場合と違います。-> {outputDirectory}");
+    }
 
-            int r;
-            int g;
-            int b;
+    if (!HarnessCases.Transitions().Any() && !HarnessCases.All().Any(item => item.Frames.Count > 1))
+        Console.Error.WriteLine("ケースがありません。HarnessCases に書き足してください。");
 
-            if (radius < 0.22f)
+    foreach (var (name, effect, frames) in HarnessCases.All())
+    {
+        if (frames.Count < 2)
+            continue;
+
+        var sequential = renderer.Render(effect, frames);
+        for (var index = 0; index < frames.Count; index++)
+        {
+            var fresh = renderer.Render(effect, [frames[index]])[0];
+            var difference = ImageComparison.Of(fresh, sequential[index], renderer.CanvasWidth, renderer.CanvasHeight);
+            var label = $"{name}-f{frames[index]:D3}";
+            if (difference.IsEmpty)
             {
-                r = (int)(200f + (40f * u));
-                g = (int)(30f + (40f * v));
-                b = (int)(40f + (170f * u));
-            }
-            else if (radius < 0.28f)
-            {
-                float blend = (radius - 0.22f) / 0.06f;
-                r = (int)((1f - blend) * 210f);
-                g = (int)(((1f - blend) * 50f) + (blend * 177f));
-                b = (int)(((1f - blend) * 120f) + (blend * 64f));
-            }
-            else
-            {
-                r = (int)(6f * MathF.Sin((u + v) * 24f));
-                g = 177 + (int)(4f * MathF.Cos(u * 31f));
-                b = 64 + (int)(4f * MathF.Sin(v * 27f));
+                Console.WriteLine($"{label}: 一致");
+                continue;
             }
 
-            r = Math.Clamp(r, 0, 255);
-            g = Math.Clamp(g, 0, 255);
-            b = Math.Clamp(b, 0, 255);
-
-            pixels[(y * width) + x] = unchecked((int)0xFF000000) | (r << 16) | (g << 8) | b;
+            failures++;
+            Directory.CreateDirectory(outputDirectory);
+            HarnessImage.Save(Path.Combine(outputDirectory, label + "-direct.png"), fresh, renderer.CanvasWidth, renderer.CanvasHeight);
+            HarnessImage.Save(Path.Combine(outputDirectory, label + "-transitioned.png"), sequential[index], renderer.CanvasWidth, renderer.CanvasHeight);
+            Console.Error.WriteLine($"{label}: {difference}。前のフレームから進めた描画が作り直した場合と違います。-> {outputDirectory}");
         }
     }
 
-    return pixels;
+    return failures == 0 ? 0 : 1;
 }
 
-static Vector3 ComputeWhiteDirection(Vector3 backgroundLab)
+static int Compare(string beforeDirectory, string afterDirectory)
 {
-    Vector3 whiteLab = new(1f, 0f, 0f);
-    Vector3 direction = whiteLab - backgroundLab;
-    float length = direction.Length();
+    if (!Directory.Exists(beforeDirectory) || !Directory.Exists(afterDirectory))
+        throw new HarnessException("比べる出力先がありません。");
 
-    return length > 1e-6f ? direction / length : whiteLab;
+    var failures = 0;
+    var names = Directory.EnumerateFiles(beforeDirectory, "*.png")
+        .Concat(Directory.EnumerateFiles(afterDirectory, "*.png"))
+        .Select(path => Path.GetFileName(path))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .Order(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+    if (names.Length == 0)
+        throw new HarnessException("比べる PNG がありません。");
+
+    foreach (var name in names)
+    {
+        var before = Path.Combine(beforeDirectory, name);
+        var after = Path.Combine(afterDirectory, name);
+        if (!File.Exists(before) || !File.Exists(after))
+        {
+            Console.Error.WriteLine($"{name}: {(File.Exists(before) ? "後" : "前")}にありません。");
+            failures++;
+            continue;
+        }
+
+        var (beforeWidth, beforeHeight, beforePixels) = HarnessImage.LoadPremultiplied(before);
+        var (afterWidth, afterHeight, afterPixels) = HarnessImage.LoadPremultiplied(after);
+        if (beforeWidth != afterWidth || beforeHeight != afterHeight)
+        {
+            Console.Error.WriteLine($"{name}: 寸法が違います。前 {beforeWidth}x{beforeHeight}、後 {afterWidth}x{afterHeight}");
+            failures++;
+            continue;
+        }
+
+        var difference = ImageComparison.Of(beforePixels, afterPixels, beforeWidth, beforeHeight);
+        Console.WriteLine($"{name}: {difference}");
+        if (!difference.IsEmpty)
+            failures++;
+    }
+
+    return failures == 0 ? 0 : 1;
 }
 
-static Vector3 ToLinear(Vector3 srgb)
+static void Benchmark(HarnessImage image)
 {
-    return new Vector3(SrgbToLinear(srgb.X), SrgbToLinear(srgb.Y), SrgbToLinear(srgb.Z));
+    const int Frames = 60;
+
+    using var renderer = new HarnessRenderer(image.Width, image.Height, image);
+    Console.WriteLine($"adapter: {renderer.Adapter} (driver {renderer.Driver})");
+    foreach (var (name, effect) in HarnessCases.Benchmarks())
+    {
+        Report(image, name, "still", renderer.Measure(effect, Frames, moving: false));
+        Report(image, name, "moving", renderer.Measure(effect, Frames, moving: true));
+    }
 }
 
-static float SrgbToLinear(float c)
-    => c <= 0.04045f ? c / 12.92f : MathF.Pow((c + 0.055f) / 1.055f, 2.4f);
+static void Report(HarnessImage image, string name, string motion, HarnessRenderer.Measurement measurement)
+    => Console.WriteLine(
+        $"{image.Width}x{image.Height} {name,-15} {motion,-6} " +
+        $"gpu={(measurement.Gpu is { } gpu ? gpu.TotalMilliseconds.ToString("F3") : "n/a"),7} " +
+        $"cpu={measurement.Cpu.TotalMilliseconds,7:F3} " +
+        $"update={measurement.Update.TotalMilliseconds,6:F3} " +
+        $"alloc={measurement.Allocated,6} gen0={measurement.Gen0}");
 
-static Vector3 ToOklab(Vector3 c)
+static List<GoldenCase> Evaluate(HarnessRenderer renderer, Action<GoldenCase, string[], byte[][]>? report)
 {
-    float l = (0.4122214708f * c.X) + (0.5363325363f * c.Y) + (0.0514459929f * c.Z);
-    float m = (0.2119034982f * c.X) + (0.6806995451f * c.Y) + (0.1073969566f * c.Z);
-    float s = (0.0883024619f * c.X) + (0.2817188376f * c.Y) + (0.6299787005f * c.Z);
+    var cases = new List<GoldenCase>();
+    var names = new HashSet<string>(StringComparer.Ordinal);
+    foreach (var (name, effect, frames) in HarnessCases.All())
+    {
+        if (!names.Add(name))
+            throw new HarnessException($"ケース名が重複しています。{name}");
 
-    float lRoot = MathF.Cbrt(l);
-    float mRoot = MathF.Cbrt(m);
-    float sRoot = MathF.Cbrt(s);
+        var rendered = renderer.Render(effect, frames);
+        var files = new string[frames.Count];
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        for (var index = 0; index < frames.Count; index++)
+        {
+            hash.AppendData(rendered[index]);
+            files[index] = frames.Count == 1 ? name + ".png" : $"{name}-f{frames[index]:D3}.png";
+        }
 
-    return new Vector3(
-        (0.2104542553f * lRoot) + (0.7936177850f * mRoot) - (0.0040720468f * sRoot),
-        (1.9779984951f * lRoot) - (2.4285922050f * mRoot) + (0.4505937099f * sRoot),
-        (0.0259040371f * lRoot) + (0.7827717662f * mRoot) - (0.8086757660f * sRoot));
+        var golden = new GoldenCase(name, frames, Convert.ToHexString(hash.GetHashAndReset()));
+        cases.Add(golden);
+        report?.Invoke(golden, files, rendered);
+    }
+
+    return cases;
+}
+
+static int CountDuplicates(IReadOnlyList<GoldenCase> cases)
+{
+    var duplicates = 0;
+    var seen = new Dictionary<string, string>(StringComparer.Ordinal);
+    foreach (var (name, _, hash) in cases)
+    {
+        if (seen.TryGetValue(hash, out var first))
+        {
+            Console.Error.WriteLine($"{name}: {first} と出力が一致します。設定がシェーダーへ届いていません。");
+            duplicates++;
+        }
+        else
+        {
+            seen.Add(hash, name);
+        }
+    }
+
+    return duplicates;
+}
+
+static int CountOpaque(byte[] pixels)
+{
+    var count = 0;
+    for (var offset = HarnessImage.BytesPerPixel - 1; offset < pixels.Length; offset += HarnessImage.BytesPerPixel)
+    {
+        if (pixels[offset] != 0)
+            count++;
+    }
+
+    return count;
 }

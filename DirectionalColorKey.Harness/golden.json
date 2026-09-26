@@ -1,0 +1,135 @@
+{
+  "adapter": "Intel(R) Iris(R) Xe Graphics",
+  "driver": "32.0.101.7085",
+  "input": "synthetic 640x480 65CA1A75D81CE5B0",
+  "canvas": "1280x720",
+  "cases": [
+    {
+      "name": "default",
+      "frames": [
+        0
+      ],
+      "hash": "51144FD1B06E75412B489C7924ED32DCA4342BF7DA3CE9546466681F5B970DD3"
+    },
+    {
+      "name": "default-frames-0-8",
+      "frames": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8
+      ],
+      "hash": "49FAA9FDFE753FEFA84A59AFB8ABBEB762C26471EA8D8D5EE325CDFE6985F638"
+    },
+    {
+      "name": "background-color-blue",
+      "frames": [
+        0
+      ],
+      "hash": "ECA202B90B4C49FAABA0AD8CF01B0FD6F29F5691CA8AA62914DFB9F8CE910E62"
+    },
+    {
+      "name": "cluster-count-4",
+      "frames": [
+        0
+      ],
+      "hash": "BD13D4C6ED5AB497EA528059C92C9DFDBBE7D13BC2B5ED6BDA75CCD14245CB37"
+    },
+    {
+      "name": "cluster-count-4-scale-mode-opaque",
+      "frames": [
+        0
+      ],
+      "hash": "022CB26D4C066716EA12B4A5D9954064BCE43AB1776A894024B88D57501372DF"
+    },
+    {
+      "name": "opaque-percentile-50",
+      "frames": [
+        0
+      ],
+      "hash": "E76A6E1E1D27A9DB5E9F102A2430ECCA6B688F5AC7AD4B4EBF8C64A6937293E4"
+    },
+    {
+      "name": "scale-mode-foreground",
+      "frames": [
+        0
+      ],
+      "hash": "BAA37F9B3F9CE91FC37AF7578BB02BEF7C4BA32EB9187FC9E411DD157EC1CB1F"
+    },
+    {
+      "name": "foreground-color-magenta",
+      "frames": [
+        0
+      ],
+      "hash": "D11E8F89341BAA4AF30987725392F8A26E5CA228E387ADD5486A302FCB05E956"
+    },
+    {
+      "name": "noise-threshold-0",
+      "frames": [
+        0
+      ],
+      "hash": "CCAF3B7CF8F8F5660D37F2C44DB740DE12680A5DC2EBCCC891FA847A849BD1EA"
+    },
+    {
+      "name": "noise-threshold-0.2",
+      "frames": [
+        0
+      ],
+      "hash": "AE1F839435F4A23E8B93BE836309633F904979EE9B7B5A6FECE9335148F8BC39"
+    },
+    {
+      "name": "cluster-count-4-sigma-color-0.001",
+      "frames": [
+        0
+      ],
+      "hash": "6F9E6AF6B4CA24241F8A5C24A16DB7FE08576F53A5F96013DF04100EE7609681"
+    },
+    {
+      "name": "cluster-count-4-sigma-color-0.5",
+      "frames": [
+        0
+      ],
+      "hash": "9AB2540E6402BB99D192CC7390A6C8D6615D3632E0143165EF82E69FFCC2F997"
+    },
+    {
+      "name": "edge-softness-50",
+      "frames": [
+        0
+      ],
+      "hash": "AE749B112B5702FD0ED4E39EB9E2B3F8AE7C2EC29A3B5032D3842171FE419765"
+    },
+    {
+      "name": "spill-strength-0",
+      "frames": [
+        0
+      ],
+      "hash": "E5B7DB568BC43557A57B67FDA489A687454A07EE4791A395629C68A2655F904D"
+    },
+    {
+      "name": "spill-strength-100",
+      "frames": [
+        0
+      ],
+      "hash": "4A8B99FC2EFDACD3A92F32F52EF12F02E1654D03687ED31FFAE0DF10D9EA9BEE"
+    },
+    {
+      "name": "despill-bias-0.05",
+      "frames": [
+        0
+      ],
+      "hash": "8C31E7D48D90AEF8C72257964AC52D91E8E11D4440B7C28C20062465E75939E1"
+    },
+    {
+      "name": "output-foreground-off",
+      "frames": [
+        0
+      ],
+      "hash": "CEEA1A9684FE77663FCBEC9199B51DC9B4F1A35DB038022F0D07E504EE2686BF"
+    }
+  ]
+}
