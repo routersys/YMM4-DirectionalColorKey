@@ -8,23 +8,12 @@ namespace DirectionalColorKey
         private readonly DirectionalColorKeyPipelineHost pipelineHost;
 
         private ReadWriteBuffer<int>? bgraBuffer;
-        private ReadWriteBuffer<int>? previousBgraBuffer;
-        private ReadWriteBuffer<float>? colorLabBuffer;
-        private ReadWriteBuffer<float>? directionBufferA;
-        private ReadWriteBuffer<float>? directionBufferB;
-        private ReadWriteBuffer<float>? previousResultBuffer;
-        private ReadWriteBuffer<int>? maskBufferA;
-        private ReadWriteBuffer<int>? maskBufferB;
-        private ReadWriteBuffer<int>? adoptMaskBuffer;
-        private ReadWriteBuffer<int>? computeMaskBuffer;
         private ReadOnlyBuffer<float>? centerBuffer;
         private ReadWriteBuffer<int>? accumBuffer;
         private ReadWriteBuffer<int>? countBuffer;
         private ReadWriteBuffer<int>? histogramBuffer;
         private ReadWriteBuffer<int>? foregroundBufferA;
         private ReadWriteBuffer<int>? foregroundBufferB;
-        private ReadWriteBuffer<float>? srgbToLinearBuffer;
-        private ReadWriteBuffer<float>? premultipliedLinearBuffer;
         private int[]? foregroundReadback;
 
         private int width;
@@ -116,14 +105,11 @@ namespace DirectionalColorKey
         public bool DetectSourceChange()
         {
             var bgraGpu = EnsureBgraBuffer();
-            var previousBgraGpu = EnsurePreviousBgraBuffer();
-            var seedScratch = EnsureMaskBufferA();
             var countGpu = EnsureCountBuffer();
 
             countGpu.CopyFrom(zeroCounts.AsSpan(0, 1));
 
-            pipelineHost.RecordChangeCount(
-                bgraGpu.AsReadOnly(), previousBgraGpu, seedScratch, countGpu, width, height);
+            pipelineHost.RecordChangeCount(bgraGpu.AsReadOnly(), countGpu, width, height);
 
             countGpu.CopyTo(counts.AsSpan(0, 1));
 
@@ -163,15 +149,12 @@ namespace DirectionalColorKey
             int backgroundLabZBits = BitConverter.SingleToInt32Bits(backgroundLab.Z);
 
             var bgraGpu = EnsureBgraBuffer();
-            var colorLabGpu = EnsureColorLabBuffer();
-            var directionGpu = EnsureDirectionBufferA();
-            var directionScratch = EnsureDirectionBufferB();
 
             if (!bgra.IsEmpty)
                 bgraGpu.CopyFrom(bgra[..pixelCount]);
 
             pipelineHost.RecordDisplacementField(
-                bgraGpu.AsReadOnly(), colorLabGpu, directionGpu,
+                bgraGpu.AsReadOnly(),
                 backgroundLab.X, backgroundLab.Y, backgroundLab.Z,
                 noiseThreshold, width, height);
 
@@ -184,20 +167,10 @@ namespace DirectionalColorKey
                 && backgroundLabYBits == lastBackgroundLabYBits
                 && backgroundLabZBits == lastBackgroundLabZBits;
 
-            ReadWriteBuffer<float> smoothedDirections;
+            if (!canReuse || !TryRunIncrementalSmooth(sigmaColorSq))
+                pipelineHost.RecordDirectionSmooth(sigmaColorSq, SmoothIterations, width, height);
 
-            if (!canReuse || !TryRunIncrementalSmooth(
-                bgra, directionGpu, directionScratch, colorLabGpu, sigmaColorSq, out smoothedDirections))
-            {
-                pipelineHost.RecordDirectionSmooth(
-                    directionGpu, directionScratch, colorLabGpu, sigmaColorSq, SmoothIterations, width, height);
-
-                smoothedDirections = (SmoothIterations & 1) == 0 ? directionGpu : directionScratch;
-            }
-
-            pipelineHost.RecordPreviousSnapshot(
-                smoothedDirections, EnsurePreviousResultBuffer(),
-                bgraGpu.AsReadOnly(), EnsurePreviousBgraBuffer(), width, height);
+            pipelineHost.RecordPreviousSnapshot(bgraGpu.AsReadOnly(), SmoothIterations, width, height);
             hasPreviousResult = true;
             lastNoiseThresholdBits = noiseThresholdBits;
             lastSigmaColorBits = sigmaColorBits;
@@ -218,7 +191,7 @@ namespace DirectionalColorKey
                 accumGpu.CopyFrom(zeroAccumulators.AsSpan(0, accumLength));
 
                 pipelineHost.RecordClusterAssign(
-                    smoothedDirections, centerGpu, accumGpu, clusterCount, FixedPointScale, width, height);
+                    centerGpu, accumGpu, SmoothIterations, clusterCount, FixedPointScale, width, height);
 
                 accumGpu.CopyTo(accumulators.AsSpan(0, accumLength));
 
@@ -227,7 +200,7 @@ namespace DirectionalColorKey
                     break;
             }
 
-            ComputeLambdas(colorLabGpu, smoothedDirections, backgroundLab, scaleMode, opaquePercentile, foregroundLambda, physicalLambda);
+            ComputeLambdas(backgroundLab, scaleMode, opaquePercentile, foregroundLambda, physicalLambda);
 
             if (hasLambdaWarmStart)
             {
@@ -259,14 +232,11 @@ namespace DirectionalColorKey
             float referencePerp = ComputeReferencePerp(backgroundLab);
 
             var bgraGpu = EnsureBgraBuffer();
-            var colorLabGpu = EnsureColorLabBuffer();
             var foregroundSource = EnsureForegroundBufferA();
             var foregroundTarget = EnsureForegroundBufferB();
-            var srgbToLinear = EnsureSrgbToLinearBuffer();
-            var premultipliedLinear = EnsurePremultipliedLinearBuffer();
 
             pipelineHost.RecordForegroundField(
-                bgraGpu.AsReadOnly(), colorLabGpu, srgbToLinear, premultipliedLinear, foregroundSource, foregroundTarget,
+                bgraGpu.AsReadOnly(), foregroundSource, foregroundTarget,
                 backgroundLab.X, backgroundLab.Y, backgroundLab.Z,
                 referencePerp,
                 backgroundSrgb.X, backgroundSrgb.Y, backgroundSrgb.Z,
@@ -309,61 +279,36 @@ namespace DirectionalColorKey
             return foregroundBufferB;
         }
 
-        private IReadOnlyBuffer<float> EnsureSrgbToLinearBuffer()
+        private void EnsureTables()
         {
-            if (srgbToLinearBuffer is null)
-            {
-                srgbToLinearBuffer = device.AllocateReadWriteBuffer<float>(SrgbTableLength);
-                pipelineHost.RecordSrgbToLinearTable(srgbToLinearBuffer, SrgbTableLength);
-            }
-            return srgbToLinearBuffer.AsReadOnly();
+            if (!pipelineHost.TryEnsureTables(
+                    new DirectionalColorKeyTableResources.Plan(
+                        premultipliedLinearLength: PremultipliedLinearConstants.TableLength,
+                        srgbToLinearLength: SrgbTableLength),
+                    out bool changed))
+                throw new InvalidOperationException();
+
+            if (changed)
+                pipelineHost.RecordTables();
         }
 
-        private IReadOnlyBuffer<float> EnsurePremultipliedLinearBuffer()
-        {
-            if (premultipliedLinearBuffer is null)
-            {
-                premultipliedLinearBuffer = device.AllocateReadWriteBuffer<float>(PremultipliedLinearConstants.TableLength);
-                pipelineHost.RecordPremultipliedLinearTable(premultipliedLinearBuffer, PremultipliedLinearConstants.TableLength);
-            }
-            return premultipliedLinearBuffer.AsReadOnly();
-        }
-
-        private bool TryRunIncrementalSmooth(
-            ReadOnlySpan<int> bgra,
-            ReadWriteBuffer<float> rawDirections,
-            ReadWriteBuffer<float> scratchDirections,
-            ReadWriteBuffer<float> colorLabGpu,
-            float sigmaColorSq,
-            out ReadWriteBuffer<float> smoothedDirections)
+        private bool TryRunIncrementalSmooth(float sigmaColorSq)
         {
             var bgraGpu = EnsureBgraBuffer();
-            var previousBgraGpu = EnsurePreviousBgraBuffer();
-            var seedScratch = EnsureMaskBufferA();
-            var dilateScratch = EnsureMaskBufferB();
-            var adoptMask = EnsureAdoptMaskBuffer();
-            var computeMask = EnsureComputeMaskBuffer();
             var countGpu = EnsureCountBuffer();
 
             countGpu.CopyFrom(zeroCounts.AsSpan(0, 1));
 
-            pipelineHost.RecordChangeCount(
-                bgraGpu.AsReadOnly(), previousBgraGpu, seedScratch, countGpu, width, height);
+            pipelineHost.RecordChangeCount(bgraGpu.AsReadOnly(), countGpu, width, height);
 
             countGpu.CopyTo(counts.AsSpan(0, 1));
 
             if (counts[0] > (int)(pixelCount * IncrementalChangeCeiling))
-            {
-                smoothedDirections = scratchDirections;
                 return false;
-            }
 
             pipelineHost.RecordRegionSmooth(
-                rawDirections, scratchDirections, colorLabGpu, EnsurePreviousResultBuffer(),
-                seedScratch, dilateScratch, adoptMask, computeMask,
                 sigmaColorSq, AdoptReach, GuardReach, SmoothIterations, width, height);
 
-            smoothedDirections = (SmoothIterations & 1) == 0 ? rawDirections : scratchDirections;
             return true;
         }
 
@@ -438,8 +383,6 @@ namespace DirectionalColorKey
         }
 
         private void ComputeLambdas(
-            ReadWriteBuffer<float> colorLabGpu,
-            ReadWriteBuffer<float> directionGpu,
             Vector3 backgroundLab,
             DirectionalColorKeyScaleMode scaleMode,
             float opaquePercentile,
@@ -469,7 +412,7 @@ namespace DirectionalColorKey
             float projectionScale = ProjectionBins / ProjectionHistogramRange;
 
             pipelineHost.RecordProjectionHistogram(
-                colorLabGpu, directionGpu, centerGpu, histogramGpu,
+                centerGpu, histogramGpu, SmoothIterations,
                 backgroundLab.X, backgroundLab.Y, backgroundLab.Z,
                 clusterCount, ProjectionBins, projectionScale, width, height);
 
@@ -523,15 +466,33 @@ namespace DirectionalColorKey
 
         private void EnsureCapacity(int width, int height)
         {
-            if (this.width == width && this.height == height)
-                return;
+            if (this.width != width || this.height != height)
+            {
+                this.width = width;
+                this.height = height;
+                pixelCount = width * height;
 
-            this.width = width;
-            this.height = height;
-            pixelCount = width * height;
+                DisposeFrameBuffers();
+            }
 
-            hasPreviousResult = false;
-            DisposeFrameBuffers();
+            if (!pipelineHost.TryEnsureFrame(
+                    new DirectionalColorKeyFrameResources.Plan(
+                        adoptMaskLength: pixelCount,
+                        colorLabLength: pixelCount * 3,
+                        computeMaskLength: pixelCount,
+                        dilateScratchLength: pixelCount,
+                        directionsALength: pixelCount * 3,
+                        directionsBLength: pixelCount * 3,
+                        previousBgraLength: pixelCount,
+                        previousResultLength: pixelCount * 3,
+                        seedMaskLength: pixelCount),
+                    out bool changed))
+                throw new InvalidOperationException();
+
+            if (changed)
+                hasPreviousResult = false;
+
+            EnsureTables();
         }
 
         private ReadWriteBuffer<int> EnsureBgraBuffer()
@@ -542,96 +503,6 @@ namespace DirectionalColorKey
                 bgraBuffer = device.AllocateReadWriteBuffer<int>(pixelCount);
             }
             return bgraBuffer;
-        }
-
-        private ReadWriteBuffer<int> EnsurePreviousBgraBuffer()
-        {
-            if (previousBgraBuffer is null || previousBgraBuffer.Length < pixelCount)
-            {
-                previousBgraBuffer?.Dispose();
-                previousBgraBuffer = device.AllocateReadWriteBuffer<int>(pixelCount);
-            }
-            return previousBgraBuffer;
-        }
-
-        private ReadWriteBuffer<float> EnsurePreviousResultBuffer()
-        {
-            if (previousResultBuffer is null || previousResultBuffer.Length < pixelCount * 3)
-            {
-                previousResultBuffer?.Dispose();
-                previousResultBuffer = device.AllocateReadWriteBuffer<float>(pixelCount * 3);
-            }
-            return previousResultBuffer;
-        }
-
-        private ReadWriteBuffer<int> EnsureMaskBufferA()
-        {
-            if (maskBufferA is null || maskBufferA.Length < pixelCount)
-            {
-                maskBufferA?.Dispose();
-                maskBufferA = device.AllocateReadWriteBuffer<int>(pixelCount);
-            }
-            return maskBufferA;
-        }
-
-        private ReadWriteBuffer<int> EnsureMaskBufferB()
-        {
-            if (maskBufferB is null || maskBufferB.Length < pixelCount)
-            {
-                maskBufferB?.Dispose();
-                maskBufferB = device.AllocateReadWriteBuffer<int>(pixelCount);
-            }
-            return maskBufferB;
-        }
-
-        private ReadWriteBuffer<int> EnsureAdoptMaskBuffer()
-        {
-            if (adoptMaskBuffer is null || adoptMaskBuffer.Length < pixelCount)
-            {
-                adoptMaskBuffer?.Dispose();
-                adoptMaskBuffer = device.AllocateReadWriteBuffer<int>(pixelCount);
-            }
-            return adoptMaskBuffer;
-        }
-
-        private ReadWriteBuffer<int> EnsureComputeMaskBuffer()
-        {
-            if (computeMaskBuffer is null || computeMaskBuffer.Length < pixelCount)
-            {
-                computeMaskBuffer?.Dispose();
-                computeMaskBuffer = device.AllocateReadWriteBuffer<int>(pixelCount);
-            }
-            return computeMaskBuffer;
-        }
-
-        private ReadWriteBuffer<float> EnsureColorLabBuffer()
-        {
-            if (colorLabBuffer is null || colorLabBuffer.Length < pixelCount * 3)
-            {
-                colorLabBuffer?.Dispose();
-                colorLabBuffer = device.AllocateReadWriteBuffer<float>(pixelCount * 3);
-            }
-            return colorLabBuffer;
-        }
-
-        private ReadWriteBuffer<float> EnsureDirectionBufferA()
-        {
-            if (directionBufferA is null || directionBufferA.Length < pixelCount * 3)
-            {
-                directionBufferA?.Dispose();
-                directionBufferA = device.AllocateReadWriteBuffer<float>(pixelCount * 3);
-            }
-            return directionBufferA;
-        }
-
-        private ReadWriteBuffer<float> EnsureDirectionBufferB()
-        {
-            if (directionBufferB is null || directionBufferB.Length < pixelCount * 3)
-            {
-                directionBufferB?.Dispose();
-                directionBufferB = device.AllocateReadWriteBuffer<float>(pixelCount * 3);
-            }
-            return directionBufferB;
         }
 
         private ReadOnlyBuffer<float> EnsureCenterBuffer()
@@ -661,27 +532,9 @@ namespace DirectionalColorKey
         private void DisposeFrameBuffers()
         {
             bgraBuffer?.Dispose();
-            previousBgraBuffer?.Dispose();
-            colorLabBuffer?.Dispose();
-            directionBufferA?.Dispose();
-            directionBufferB?.Dispose();
-            previousResultBuffer?.Dispose();
-            maskBufferA?.Dispose();
-            maskBufferB?.Dispose();
-            adoptMaskBuffer?.Dispose();
-            computeMaskBuffer?.Dispose();
             foregroundBufferA?.Dispose();
             foregroundBufferB?.Dispose();
             bgraBuffer = null;
-            previousBgraBuffer = null;
-            colorLabBuffer = null;
-            directionBufferA = null;
-            directionBufferB = null;
-            previousResultBuffer = null;
-            maskBufferA = null;
-            maskBufferB = null;
-            adoptMaskBuffer = null;
-            computeMaskBuffer = null;
             foregroundBufferA = null;
             foregroundBufferB = null;
         }
@@ -691,10 +544,6 @@ namespace DirectionalColorKey
             pipelineHost.Dispose();
             pipelineHost.WaitForDisposal();
             DisposeFrameBuffers();
-            srgbToLinearBuffer?.Dispose();
-            srgbToLinearBuffer = null;
-            premultipliedLinearBuffer?.Dispose();
-            premultipliedLinearBuffer = null;
             centerBuffer?.Dispose();
             accumBuffer?.Dispose();
             countBuffer?.Dispose();

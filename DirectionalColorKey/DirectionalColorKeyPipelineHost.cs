@@ -1,40 +1,76 @@
 namespace DirectionalColorKey
 {
+    [ComputeResourceGroup]
+    internal sealed partial class DirectionalColorKeyFrameResources
+    {
+        [ComputePipelineResource(ComputeResourceAccess.ReadWrite)]
+        internal ReadWriteBuffer<int> PreviousBgra { get; }
+
+        [ComputePipelineResource(ComputeResourceAccess.ReadWrite)]
+        internal ReadWriteBuffer<float> ColorLab { get; }
+
+        [ComputePipelineResource(ComputeResourceAccess.ReadWrite)]
+        internal ReadWriteBuffer<float> DirectionsA { get; }
+
+        [ComputePipelineResource(ComputeResourceAccess.ReadWrite)]
+        internal ReadWriteBuffer<float> DirectionsB { get; }
+
+        [ComputePipelineResource(ComputeResourceAccess.ReadWrite)]
+        internal ReadWriteBuffer<float> PreviousResult { get; }
+
+        [ComputePipelineResource(ComputeResourceAccess.ReadWrite)]
+        internal ReadWriteBuffer<int> SeedMask { get; }
+
+        [ComputePipelineResource(ComputeResourceAccess.ReadWrite)]
+        internal ReadWriteBuffer<int> DilateScratch { get; }
+
+        [ComputePipelineResource(ComputeResourceAccess.ReadWrite)]
+        internal ReadWriteBuffer<int> AdoptMask { get; }
+
+        [ComputePipelineResource(ComputeResourceAccess.ReadWrite)]
+        internal ReadWriteBuffer<int> ComputeMask { get; }
+    }
+
+    [ComputeResourceGroup]
+    internal sealed partial class DirectionalColorKeyTableResources
+    {
+        [ComputePipelineResource(ComputeResourceAccess.ReadWrite)]
+        internal ReadWriteBuffer<float> SrgbToLinear { get; }
+
+        [ComputePipelineResource(ComputeResourceAccess.ReadWrite)]
+        internal ReadWriteBuffer<float> PremultipliedLinear { get; }
+    }
+
     [ComputePipelineHost("device", 1)]
     internal sealed partial class DirectionalColorKeyPipelineHost
     {
         private readonly GraphicsDevice device;
 
+        [ComputePipelineResource(ComputeResourceAccess.ReadWrite, ComputeResourceRecovery.Recompute)]
+        private readonly ComputeResourceGroupSlot<DirectionalColorKeyFrameResources> frame = new();
+
+        [ComputePipelineResource(ComputeResourceAccess.ReadWrite, ComputeResourceRecovery.Recompute)]
+        private readonly ComputeResourceGroupSlot<DirectionalColorKeyTableResources> tables = new();
+
         [ComputePipeline]
-        private void RecordSrgbToLinearTable(
+        private void RecordTables(
             in ComputeContext context,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<float> table,
-            int length)
+            [ComputeOwnedResource(nameof(tables))] DirectionalColorKeyTableResources tables)
         {
             _ = device;
 
-            context.For(length, new SrgbToLinearTableShader(table));
-            context.Barrier(table);
-        }
+            context.For(tables.SrgbToLinear.Length, new SrgbToLinearTableShader(tables.SrgbToLinear));
+            context.Barrier(tables.SrgbToLinear);
 
-        [ComputePipeline]
-        private void RecordPremultipliedLinearTable(
-            in ComputeContext context,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<float> table,
-            int length)
-        {
-            _ = device;
-
-            context.For(length, new PremultipliedLinearTableShader(table));
-            context.Barrier(table);
+            context.For(tables.PremultipliedLinear.Length, new PremultipliedLinearTableShader(tables.PremultipliedLinear));
+            context.Barrier(tables.PremultipliedLinear);
         }
 
         [ComputePipeline]
         private void RecordDisplacementField(
             in ComputeContext context,
+            [ComputeOwnedResource(nameof(frame))] DirectionalColorKeyFrameResources frame,
             [ComputeResource(ComputeResourceAccess.Read)] IReadOnlyBuffer<int> bgra,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<float> colorLab,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<float> directions,
             float backgroundLabX,
             float backgroundLabY,
             float backgroundLabZ,
@@ -45,38 +81,35 @@ namespace DirectionalColorKey
             _ = device;
 
             context.For(width, height, new DisplacementFieldShader(
-                bgra, colorLab, directions,
+                bgra, frame.ColorLab, frame.DirectionsA,
                 backgroundLabX, backgroundLabY, backgroundLabZ,
                 noiseThreshold, width, height));
-            context.Barrier(colorLab);
-            context.Barrier(directions);
+            context.Barrier(frame.ColorLab);
+            context.Barrier(frame.DirectionsA);
         }
 
         [ComputePipeline]
         private void RecordChangeCount(
             in ComputeContext context,
+            [ComputeOwnedResource(nameof(frame))] DirectionalColorKeyFrameResources frame,
             [ComputeResource(ComputeResourceAccess.Read)] IReadOnlyBuffer<int> bgra,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<int> previousBgra,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<int> seedMask,
             [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<int> count,
             int width,
             int height)
         {
             _ = device;
 
-            context.For(width, height, new ChangeSeedShader(bgra, previousBgra, seedMask, width, height));
-            context.Barrier(seedMask);
+            context.For(width, height, new ChangeSeedShader(bgra, frame.PreviousBgra, frame.SeedMask, width, height));
+            context.Barrier(frame.SeedMask);
 
-            context.For(ThreadGroupAlignment.AlignX<MaskCountShader>(width), ThreadGroupAlignment.AlignY<MaskCountShader>(height), new MaskCountShader(seedMask, count, width, height));
+            context.For(ThreadGroupAlignment.AlignX<MaskCountShader>(width), ThreadGroupAlignment.AlignY<MaskCountShader>(height), new MaskCountShader(frame.SeedMask, count, width, height));
             context.Barrier(count);
         }
 
         [ComputePipeline]
         private void RecordDirectionSmooth(
             in ComputeContext context,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<float> directions,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<float> scratch,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<float> colorLab,
+            [ComputeOwnedResource(nameof(frame))] DirectionalColorKeyFrameResources frame,
             float sigmaColorSquared,
             int iterations,
             int width,
@@ -84,12 +117,12 @@ namespace DirectionalColorKey
         {
             _ = device;
 
-            var source = directions;
-            var target = scratch;
+            var source = frame.DirectionsA;
+            var target = frame.DirectionsB;
 
             for (int iteration = 0; iteration < iterations; iteration++)
             {
-                context.For(ThreadGroupAlignment.AlignX<DirectionSmoothShader>(width), ThreadGroupAlignment.AlignY<DirectionSmoothShader>(height), new DirectionSmoothShader(source, colorLab, target, sigmaColorSquared, width, height));
+                context.For(ThreadGroupAlignment.AlignX<DirectionSmoothShader>(width), ThreadGroupAlignment.AlignY<DirectionSmoothShader>(height), new DirectionSmoothShader(source, frame.ColorLab, target, sigmaColorSquared, width, height));
                 context.Barrier(target);
 
                 (source, target) = (target, source);
@@ -99,14 +132,7 @@ namespace DirectionalColorKey
         [ComputePipeline]
         private void RecordRegionSmooth(
             in ComputeContext context,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<float> directions,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<float> scratch,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<float> colorLab,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<float> previousResult,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<int> seedMask,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<int> dilateScratch,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<int> adoptMask,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<int> computeMask,
+            [ComputeOwnedResource(nameof(frame))] DirectionalColorKeyFrameResources frame,
             float sigmaColorSquared,
             int adoptReach,
             int guardReach,
@@ -116,57 +142,57 @@ namespace DirectionalColorKey
         {
             _ = device;
 
-            context.For(width, height, new DilateHorizontalShader(seedMask, dilateScratch, adoptReach, width, height));
-            context.Barrier(dilateScratch);
-            context.For(width, height, new DilateVerticalShader(dilateScratch, adoptMask, adoptReach, width, height));
-            context.Barrier(adoptMask);
+            context.For(width, height, new DilateHorizontalShader(frame.SeedMask, frame.DilateScratch, adoptReach, width, height));
+            context.Barrier(frame.DilateScratch);
+            context.For(width, height, new DilateVerticalShader(frame.DilateScratch, frame.AdoptMask, adoptReach, width, height));
+            context.Barrier(frame.AdoptMask);
 
-            context.For(width, height, new DilateHorizontalShader(adoptMask, dilateScratch, guardReach, width, height));
-            context.Barrier(dilateScratch);
-            context.For(width, height, new DilateVerticalShader(dilateScratch, computeMask, guardReach, width, height));
-            context.Barrier(computeMask);
+            context.For(width, height, new DilateHorizontalShader(frame.AdoptMask, frame.DilateScratch, guardReach, width, height));
+            context.Barrier(frame.DilateScratch);
+            context.For(width, height, new DilateVerticalShader(frame.DilateScratch, frame.ComputeMask, guardReach, width, height));
+            context.Barrier(frame.ComputeMask);
 
-            var source = directions;
-            var target = scratch;
+            var source = frame.DirectionsA;
+            var target = frame.DirectionsB;
 
             for (int iteration = 0; iteration < iterations; iteration++)
             {
                 context.For(ThreadGroupAlignment.AlignX<RegionDirectionSmoothShader>(width), ThreadGroupAlignment.AlignY<RegionDirectionSmoothShader>(height), new RegionDirectionSmoothShader(
-                    source, colorLab, target, computeMask, sigmaColorSquared, width, height));
+                    source, frame.ColorLab, target, frame.ComputeMask, sigmaColorSquared, width, height));
                 context.Barrier(target);
 
                 (source, target) = (target, source);
             }
 
-            context.For(width, height, new AdoptRegionShader(source, previousResult, adoptMask, width, height));
+            context.For(width, height, new AdoptRegionShader(source, frame.PreviousResult, frame.AdoptMask, width, height));
             context.Barrier(source);
         }
 
         [ComputePipeline]
         private void RecordPreviousSnapshot(
             in ComputeContext context,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<float> smoothedDirections,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<float> previousResult,
+            [ComputeOwnedResource(nameof(frame))] DirectionalColorKeyFrameResources frame,
             [ComputeResource(ComputeResourceAccess.Read)] IReadOnlyBuffer<int> bgra,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<int> previousBgra,
+            int smoothIterations,
             int width,
             int height)
         {
             _ = device;
 
-            context.For(width, height, new CopyDirectionsShader(smoothedDirections, previousResult, width, height));
-            context.Barrier(previousResult);
+            context.For(width, height, new CopyDirectionsShader(SmoothedDirections(frame, smoothIterations), frame.PreviousResult, width, height));
+            context.Barrier(frame.PreviousResult);
 
-            context.For(width, height, new CopyPackedShader(bgra, previousBgra, width, height));
-            context.Barrier(previousBgra);
+            context.For(width, height, new CopyPackedShader(bgra, frame.PreviousBgra, width, height));
+            context.Barrier(frame.PreviousBgra);
         }
 
         [ComputePipeline]
         private void RecordClusterAssign(
             in ComputeContext context,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<float> directions,
+            [ComputeOwnedResource(nameof(frame))] DirectionalColorKeyFrameResources frame,
             [ComputeResource(ComputeResourceAccess.Read)] ReadOnlyBuffer<float> centers,
             [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<int> accumulators,
+            int smoothIterations,
             int clusterCount,
             float fixedPointScale,
             int width,
@@ -175,17 +201,17 @@ namespace DirectionalColorKey
             _ = device;
 
             context.For(ThreadGroupAlignment.AlignX<ClusterAssignAccumulateShader>(width), ThreadGroupAlignment.AlignY<ClusterAssignAccumulateShader>(height), new ClusterAssignAccumulateShader(
-                directions, centers, accumulators, clusterCount, fixedPointScale, width, height));
+                SmoothedDirections(frame, smoothIterations), centers, accumulators, clusterCount, fixedPointScale, width, height));
             context.Barrier(accumulators);
         }
 
         [ComputePipeline]
         private void RecordProjectionHistogram(
             in ComputeContext context,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<float> colorLab,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<float> directions,
+            [ComputeOwnedResource(nameof(frame))] DirectionalColorKeyFrameResources frame,
             [ComputeResource(ComputeResourceAccess.Read)] ReadOnlyBuffer<float> centers,
             [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<int> histogram,
+            int smoothIterations,
             float backgroundLabX,
             float backgroundLabY,
             float backgroundLabZ,
@@ -198,7 +224,7 @@ namespace DirectionalColorKey
             _ = device;
 
             context.For(width, height, new ProjectionHistogramShader(
-                colorLab, directions, centers, histogram,
+                frame.ColorLab, SmoothedDirections(frame, smoothIterations), centers, histogram,
                 backgroundLabX, backgroundLabY, backgroundLabZ,
                 clusterCount, binsPerCluster, projectionScale, width, height));
             context.Barrier(histogram);
@@ -207,10 +233,9 @@ namespace DirectionalColorKey
         [ComputePipeline]
         private void RecordForegroundField(
             in ComputeContext context,
+            [ComputeOwnedResource(nameof(frame))] DirectionalColorKeyFrameResources frame,
+            [ComputeOwnedResource(nameof(tables))] DirectionalColorKeyTableResources tables,
             [ComputeResource(ComputeResourceAccess.Read)] IReadOnlyBuffer<int> bgra,
-            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<float> colorLab,
-            [ComputeResource(ComputeResourceAccess.Read)] IReadOnlyBuffer<float> srgbToLinear,
-            [ComputeResource(ComputeResourceAccess.Read)] IReadOnlyBuffer<float> premultipliedLinear,
             [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<int> foregroundA,
             [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<int> foregroundB,
             float backgroundLabX,
@@ -228,7 +253,7 @@ namespace DirectionalColorKey
             _ = device;
 
             context.For(width, height, new ForegroundSeedShader(
-                bgra, colorLab, foregroundA,
+                bgra, frame.ColorLab, foregroundA,
                 backgroundLabX, backgroundLabY, backgroundLabZ,
                 referencePerp, width, height));
             context.Barrier(foregroundA);
@@ -239,7 +264,7 @@ namespace DirectionalColorKey
             for (int iteration = 0; iteration < iterations; iteration++)
             {
                 context.For(ThreadGroupAlignment.AlignX<ForegroundPropagateShader>(width), ThreadGroupAlignment.AlignY<ForegroundPropagateShader>(height), new ForegroundPropagateShader(
-                    source, bgra, srgbToLinear, premultipliedLinear, target,
+                    source, bgra, tables.SrgbToLinear.AsReadOnly(), tables.PremultipliedLinear.AsReadOnly(), target,
                     backgroundSrgbR, backgroundSrgbG, backgroundSrgbB,
                     sigmaLineSquared, width, height));
                 context.Barrier(target);
@@ -247,5 +272,8 @@ namespace DirectionalColorKey
                 (source, target) = (target, source);
             }
         }
+
+        private static ReadWriteBuffer<float> SmoothedDirections(DirectionalColorKeyFrameResources frame, int iterations)
+            => (iterations & 1) == 0 ? frame.DirectionsA : frame.DirectionsB;
     }
 }
