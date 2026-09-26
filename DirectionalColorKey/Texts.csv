@@ -29,3 +29,4 @@ DirectionalColorKeyDespillBiasName,,スピル許容,Despill Bias,溢色容差,�
 DirectionalColorKeyDespillBiasDesc,,スピル除去を開始する彩度の下限,Chroma offset before despill begins,溢色去除开始的色度下限,溢色去除開始的色度下限,스필 제거 시작 채도 하한,Umbral de croma antes de despill,إزاحة اللون قبل بدء إزالة التسرب,Ambang kroma sebelum despill
 DirectionalColorKeyOutputForegroundName,,前景出力,Output Foreground,输出前景,輸出前景,전경 출력,Salida de primer plano,إخراج المقدمة,Keluarkan Latar Depan
 DirectionalColorKeyOutputForegroundDesc,,オフでマスクを確認できます,Turn off to inspect the mask,关闭以查看遮罩,關閉以查看遮罩,끄면 마스크를 확인할 수 있습니다,Desactivar para inspeccionar la máscara,أوقفه لفحص القناع,Matikan untuk memeriksa topeng
+UpdateAvailableMessage,,新しいバージョン {0} が公開されています。,A new version {0} is available.,新版本 {0} 已发布。,新版本 {0} 已發布。,새 버전 {0}이(가) 공개되었습니다.,La nueva versión {0} ya está disponible.,تم إصدار نسخة جديدة {0}.,Versi baru {0} telah dirilis.

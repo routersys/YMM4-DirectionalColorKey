@@ -12,6 +12,11 @@ namespace DirectionalColorKey
     [VideoEffect(nameof(Texts.DirectionalColorKeyEffectName), [VideoEffectCategories.Composition], ["directional color key", "dcsk", "chroma key", "方向クロマキー", "色分離キー", "変位方向キー"], IsAviUtlSupported = false, ResourceType = typeof(Texts))]
     public sealed class DirectionalColorKeyEffect : VideoEffectBase
     {
+        public DirectionalColorKeyEffect()
+        {
+            DirectionalColorKeyUpdateNotifier.EnsureCheckedOnce();
+        }
+
         public override string Label => Texts.DirectionalColorKeyEffectName;
 
         [Display(GroupName = nameof(Texts.DirectionalColorKeyGroupName), Name = nameof(Texts.DirectionalColorKeyBackgroundColorName), Description = nameof(Texts.DirectionalColorKeyBackgroundColorDesc), Order = 100, ResourceType = typeof(Texts))]
