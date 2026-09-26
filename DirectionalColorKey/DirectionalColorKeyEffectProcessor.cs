@@ -18,7 +18,7 @@ namespace DirectionalColorKey
 
 		private readonly IGraphicsDevicesAndContext devices;
 		private readonly DirectionalColorKeyEffect item;
-		private readonly DirectionalColorKeyAnalyzer? analyzer;
+		private DirectionalColorKeyAnalyzer? analyzer;
 
 		private DirectionalColorKeyCustomEffect? effect;
 
@@ -31,11 +31,11 @@ namespace DirectionalColorKey
 		private int[]? sourceBuffer;
 		private int bufferPixelCount;
 
-		private readonly ComputeExternalQueueScheduler? scheduler;
-		private readonly DirectionalColorKeyInteropProvider? interopProvider;
-		private readonly ComputeInteropDomain? interopDomain;
-		private readonly DirectionalColorKeyResourceSet? resourceSet;
-		private readonly DirectionalColorKeyInteropHost? interopHost;
+		private ComputeExternalQueueScheduler? scheduler;
+		private DirectionalColorKeyInteropProvider? interopProvider;
+		private ComputeInteropDomain? interopDomain;
+		private DirectionalColorKeyResourceSet? resourceSet;
+		private DirectionalColorKeyInteropHost? interopHost;
 		private ExternalTextureLease<ExternalDirect3D11TextureView>? foregroundLease;
 
 		private bool isFirst = true;
@@ -59,7 +59,10 @@ namespace DirectionalColorKey
 		{
 			this.devices = devices;
 			this.item = item;
+		}
 
+		private void CreateCompute(IGraphicsDevicesAndContext devices)
+		{
 			var scheduler = ComputeExternalQueueScheduler.Create();
 			interopProvider = DirectionalColorKeyInteropProvider.TryCreate(devices, scheduler, out var interopDevice);
 
@@ -114,6 +117,8 @@ namespace DirectionalColorKey
 
 		protected override ID2D1Image? CreateEffect(IGraphicsDevicesAndContext devices)
 		{
+			CreateCompute(devices);
+
 			if (analyzer is null)
 				return null;
 
