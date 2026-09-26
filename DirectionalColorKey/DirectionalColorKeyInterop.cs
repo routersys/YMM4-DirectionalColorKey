@@ -40,8 +40,7 @@ namespace DirectionalColorKey
 
                 device = devices.D3D.Device.QueryInterface<ID3D11Device1>();
                 context = devices.D3D.DeviceContext.QueryInterface<ID3D11DeviceContext4>();
-                renderContext = devices.D2D.Device.CreateDeviceContext(DeviceContextOptions.EnableMultithreadedOptimizations)
-                    .QueryInterface<ID2D1DeviceContext6>();
+                renderContext = devices.D2D.Device.CreateDeviceContext(DeviceContextOptions.EnableMultithreadedOptimizations);
 
                 var provider = new DirectionalColorKeyInteropProvider(device, context, renderContext, scheduler);
 
