@@ -42,7 +42,6 @@ namespace DirectionalColorKey
 
 		private bool isFirst = true;
 		private bool hasAnalysisCache;
-		private int lastFrame;
 		private RawRectF lastBounds;
 		private Color backgroundColor;
 		private Color foregroundColor;
@@ -208,15 +207,9 @@ namespace DirectionalColorKey
 			bool sharedTexturesReplaced = false;
 			bool useInterop = IsInteropAvailable && TryEnsureInteropTextures(width, height, out sharedTexturesReplaced);
 
-			bool sourcePossiblyChanged = isFirst
-				|| !hasAnalysisCache
-				|| sharedTexturesReplaced
-				|| lastFrame != frame
-				|| !lastBounds.Equals(bounds);
-
-			bool contentChanged = sourcePossiblyChanged && (useInterop
+			bool contentChanged = useInterop
 				? CaptureSourceThroughSharedTexture(bounds, width, height)
-				: RenderSourceToBuffer(dc, bounds, width, height));
+				: RenderSourceToBuffer(dc, bounds, width, height);
 
 			bool analysisDirty = isFirst
 				|| !hasAnalysisCache
@@ -305,7 +298,6 @@ namespace DirectionalColorKey
 				effect.OutputForeground = currentOutputForeground ? 1f : 0f;
 
 			isFirst = false;
-			lastFrame = frame;
 			lastBounds = bounds;
 			backgroundColor = currentBackground;
 			foregroundColor = currentForeground;
