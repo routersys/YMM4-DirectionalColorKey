@@ -43,7 +43,7 @@ public sealed class DirectionalColorKeyAnalyzerTests
         return pixels;
     }
 
-    static void Analyze(DirectionalColorKeyAnalyzer analyzer, int[] image, int width, int height, int clusters, DirectionalColorKeyScaleMode mode)
+    static void Analyze(DirectionalColorKeyAnalyzer analyzer, int[] image, int width, int height, int clusters, DirectionalColorKeyScaleMode mode, float foregroundLambda = 0.5f, bool resetLambdaSmoothing = true)
         => analyzer.Analyze(
             image.AsSpan(0, width * height),
             width,
@@ -55,9 +55,9 @@ public sealed class DirectionalColorKeyAnalyzerTests
             0.1f,
             mode,
             0.99f,
-            0.5f,
+            foregroundLambda,
             static (_, floorValue) => MathF.Max(floorValue, 0.5f),
-            true);
+            resetLambdaSmoothing);
 
     [Fact]
     public void ClusterCountIsClampedToRequestedRange()
@@ -125,5 +125,21 @@ public sealed class DirectionalColorKeyAnalyzerTests
 
             Assert.InRange(analyzer.ClusterCount, 1, 4);
         }
+    }
+
+    [Fact]
+    public void TheLambdaMovesAQuarterOfTheWayUnlessItsSmoothingIsReset()
+    {
+        using var analyzer = CreateAnalyzer();
+        var image = CreateImage(128, 96);
+        Analyze(analyzer, image, 128, 96, 1, DirectionalColorKeyScaleMode.Foreground, foregroundLambda: 0.5f);
+
+        Analyze(analyzer, image, 128, 96, 1, DirectionalColorKeyScaleMode.Foreground, foregroundLambda: 0.9f, resetLambdaSmoothing: false);
+        var smoothed = analyzer.GetLambda(0);
+        Analyze(analyzer, image, 128, 96, 1, DirectionalColorKeyScaleMode.Foreground, foregroundLambda: 0.9f);
+        var reset = analyzer.GetLambda(0);
+
+        Assert.Equal(0.6f, smoothed, 5);
+        Assert.Equal(0.9f, reset, 5);
     }
 }
