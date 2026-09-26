@@ -14,6 +14,7 @@ namespace DirectionalColorKey
     {
         public DirectionalColorKeyEffect()
         {
+            DirectionalColorKeyTelemetry.EnsureStartedOnce();
             DirectionalColorKeyUpdateNotifier.EnsureCheckedOnce();
         }
 
