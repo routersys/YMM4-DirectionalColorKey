@@ -159,4 +159,32 @@ public sealed class DirectionalColorKeyInteropTests
         Assert.Equal((0, 0, 96, 64), (rendering.Left, rendering.Top, rendering.Width, rendering.Height));
         Assert.All(rendering.Coordinates(), point => Assert.Equal(Unpack(field[point.Y * 96 + point.X]), rendering[point.X, point.Y]));
     }
+
+    [Fact]
+    public void TheForegroundIsWrittenAfterTheSourceIsReplacedByALargerOne()
+    {
+        using var devices = new GraphicsDevices();
+        using var context = devices.CreateContext();
+        using var interop = Interop.Create(context);
+
+        foreach (var (width, height) in new[] { (96, 64), (160, 64) })
+        {
+            using var source = new SourceImage(context, width, height, CenteredRectangle(width, height));
+            Assert.True(interop.Resources.TryEnsureSource(width, height, out var sourceChanged));
+            Assert.True(interop.Resources.TryEnsureForeground(width, height, out var foregroundChanged));
+            interop.Draw(source.Bitmap);
+            interop.Analyzer.CaptureSource(interop.Resources.GetSourceComputeBinding(), width, height);
+            Analyze(interop.Analyzer, default, width, height);
+            var field = interop.Analyzer.BuildForegroundField(width, height, BackgroundLab, BackgroundSrgb).ToArray();
+
+            interop.Analyzer.WriteForegroundField(interop.Resources.GetForegroundComputeBinding(), width, height, BackgroundLab, BackgroundSrgb);
+            var rendering = interop.CaptureForeground(context);
+
+            Assert.True(sourceChanged);
+            Assert.True(foregroundChanged);
+            Assert.Contains(field, value => value != 0);
+            Assert.Equal((0, 0, width, height), (rendering.Left, rendering.Top, rendering.Width, rendering.Height));
+            Assert.All(rendering.Coordinates(), point => Assert.Equal(Unpack(field[point.Y * width + point.X]), rendering[point.X, point.Y]));
+        }
+    }
 }
