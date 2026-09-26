@@ -65,7 +65,7 @@
 
 	<ItemGroup>
 		<PackageReference Include="ComputeWeave" Version="2.6.0" />
-		<PackageReference Include="ILRepack" Version="2.0.46" PrivateAssets="all" ExcludeAssets="all" GeneratePathProperty="true" />
+		<PackageReference Include="ILRepack" Version="2.0.48" PrivateAssets="all" ExcludeAssets="all" GeneratePathProperty="true" />
 		<PackageReference Include="Microsoft.Xaml.Behaviors.Wpf" Version="1.1.142" />
 		<Using Include="ComputeWeave" />
 	</ItemGroup>
