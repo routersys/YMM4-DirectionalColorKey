@@ -1,6 +1,10 @@
+using System.Diagnostics;
 using System.IO;
 using System.IO.Packaging;
+using System.Numerics;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using DirectionalColorKey;
 using DirectionalColorKey.Harness;
 using SharpGen.Runtime;
 
@@ -10,6 +14,8 @@ const int ImageWidth = 640;
 const int ImageHeight = 480;
 const int FullHdWidth = 1920;
 const int FullHdHeight = 1080;
+const int UltraHdWidth = 3840;
+const int UltraHdHeight = 2160;
 
 _ = PackUriHelper.UriSchemePack;
 
@@ -29,6 +35,14 @@ try
 {
     if (arguments.Mode == HarnessMode.Compare)
         return Compare(arguments.Before!, arguments.After!);
+
+    if (arguments.Mode == HarnessMode.Analysis)
+    {
+        HarnessImage[] analysisImages = arguments.Input is { } analysisInput
+            ? [HarnessImage.Load(analysisInput)]
+            : [HarnessImage.Synthetic(CanvasWidth, CanvasHeight), HarnessImage.Synthetic(FullHdWidth, FullHdHeight), HarnessImage.Synthetic(UltraHdWidth, UltraHdHeight)];
+        return Analysis(analysisImages);
+    }
 
     var outputDirectory = arguments.OutputDirectory ?? Path.Combine(AppContext.BaseDirectory, "harness-output");
     if (arguments.Mode == HarnessMode.Benchmark)
@@ -202,6 +216,115 @@ static int Transition(HarnessRenderer renderer, string outputDirectory)
     }
 
     return failures == 0 ? 0 : 1;
+}
+
+static int Analysis(IReadOnlyList<HarnessImage> images)
+{
+    const int Rounds = 12;
+    const int Seed = 17;
+    const float NoiseThreshold = 0.02f;
+    const float SigmaColor = 0.1f;
+    const float OpaquePercentile = 0.99f;
+    const float ForegroundLambda = 0.5f;
+
+    using var analyzer = DirectionalColorKeyAnalyzer.TryCreate();
+    if (analyzer is null)
+        throw new HarnessException("Direct3D 12を利用できません。");
+
+    var backgroundSrgb = new Vector3(0f, 1f, 0f);
+    var backgroundLab = ToOklab(ToLinear(backgroundSrgb));
+    var whiteDirection = ComputeWhiteDirection(backgroundLab);
+    var physicalLambda = static (Vector3 _, float floor) => MathF.Max(floor, ForegroundLambda);
+    var variants = new (int Clusters, DirectionalColorKeyScaleMode Mode)[]
+    {
+        (1, DirectionalColorKeyScaleMode.Physical),
+        (4, DirectionalColorKeyScaleMode.Physical),
+        (1, DirectionalColorKeyScaleMode.Foreground),
+        (4, DirectionalColorKeyScaleMode.Foreground),
+    };
+    var stopwatch = new Stopwatch();
+
+    Console.WriteLine($"analysis over {Rounds} interleaved rounds (ms)");
+    foreach (var image in images)
+    {
+        var pixels = MemoryMarshal.Cast<byte, int>(image.Pixels).ToArray();
+        var analyzeSamples = new List<double>[variants.Length];
+        var foregroundSamples = new List<double>[variants.Length];
+        for (var index = 0; index < variants.Length; index++)
+        {
+            analyzeSamples[index] = new List<double>(Rounds);
+            foregroundSamples[index] = new List<double>(Rounds);
+        }
+
+        foreach (var (clusters, mode) in variants)
+        {
+            analyzer.Analyze(pixels, image.Width, image.Height, backgroundLab, whiteDirection, clusters, NoiseThreshold, SigmaColor, mode, OpaquePercentile, ForegroundLambda, physicalLambda, true);
+            _ = analyzer.BuildForegroundField(image.Width, image.Height, backgroundLab, backgroundSrgb);
+        }
+
+        var order = Enumerable.Range(0, variants.Length).ToArray();
+        var random = new Random(Seed);
+        for (var round = 0; round < Rounds; round++)
+        {
+            for (var index = order.Length - 1; index > 0; index--)
+            {
+                var swap = random.Next(index + 1);
+                (order[index], order[swap]) = (order[swap], order[index]);
+            }
+
+            foreach (var index in order)
+            {
+                var (clusters, mode) = variants[index];
+                analyzer.Analyze(pixels, image.Width, image.Height, backgroundLab, whiteDirection, clusters, NoiseThreshold, SigmaColor, mode, OpaquePercentile, ForegroundLambda, physicalLambda, true);
+                _ = analyzer.BuildForegroundField(image.Width, image.Height, backgroundLab, backgroundSrgb);
+
+                stopwatch.Restart();
+                analyzer.Analyze(pixels, image.Width, image.Height, backgroundLab, whiteDirection, clusters, NoiseThreshold, SigmaColor, mode, OpaquePercentile, ForegroundLambda, physicalLambda, false);
+                stopwatch.Stop();
+                analyzeSamples[index].Add(stopwatch.Elapsed.TotalMilliseconds);
+
+                stopwatch.Restart();
+                _ = analyzer.BuildForegroundField(image.Width, image.Height, backgroundLab, backgroundSrgb);
+                stopwatch.Stop();
+                foregroundSamples[index].Add(stopwatch.Elapsed.TotalMilliseconds);
+            }
+        }
+
+        for (var index = 0; index < variants.Length; index++)
+        {
+            var analyze = analyzeSamples[index].OrderBy(static value => value).ToArray();
+            var foreground = foregroundSamples[index].OrderBy(static value => value).ToArray();
+            Console.WriteLine(
+                $"  {image.Width}x{image.Height} clusters={variants[index].Clusters} {variants[index].Mode,-10} " +
+                $"analyze min={analyze[0],8:F2} median={analyze[analyze.Length / 2],8:F2}  " +
+                $"foreground min={foreground[0],8:F2} median={foreground[foreground.Length / 2],8:F2}");
+        }
+    }
+
+    return 0;
+}
+
+static Vector3 ComputeWhiteDirection(Vector3 backgroundLab)
+{
+    var whiteLab = new Vector3(1f, 0f, 0f);
+    var direction = whiteLab - backgroundLab;
+    var length = direction.Length();
+    return length > 1e-6f ? direction / length : whiteLab;
+}
+
+static Vector3 ToLinear(Vector3 srgb) => new(SrgbToLinear(srgb.X), SrgbToLinear(srgb.Y), SrgbToLinear(srgb.Z));
+
+static float SrgbToLinear(float c) => c <= 0.04045f ? c / 12.92f : MathF.Pow((c + 0.055f) / 1.055f, 2.4f);
+
+static Vector3 ToOklab(Vector3 c)
+{
+    var l = MathF.Cbrt(0.4122214708f * c.X + 0.5363325363f * c.Y + 0.0514459929f * c.Z);
+    var m = MathF.Cbrt(0.2119034982f * c.X + 0.6806995451f * c.Y + 0.1073969566f * c.Z);
+    var s = MathF.Cbrt(0.0883024619f * c.X + 0.2817188376f * c.Y + 0.6299787005f * c.Z);
+    return new Vector3(
+        0.2104542553f * l + 0.7936177850f * m - 0.0040720468f * s,
+        1.9779984951f * l - 2.4285922050f * m + 0.4505937099f * s,
+        0.0259040371f * l + 0.7827717662f * m - 0.8086757660f * s);
 }
 
 static int Compare(string beforeDirectory, string afterDirectory)
