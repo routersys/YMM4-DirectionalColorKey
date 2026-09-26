@@ -11,11 +11,14 @@ public sealed class DirectionalColorKeyAnalyzerTests
     static readonly Vector3 BackgroundLab = new(0.51975185f, -0.14032371f, 0.10767135f);
     static readonly Vector3 BackgroundSrgb = new(0f, 1f, 0f);
 
+    static readonly bool Direct3D12IsAvailable = GraphicsDevice.EnumerateDevices().Any();
+
     static DirectionalColorKeyAnalyzer CreateAnalyzer()
     {
-        var analyzer = DirectionalColorKeyAnalyzer.TryCreate();
-        if (analyzer is null)
+        if (!Direct3D12IsAvailable)
             Assert.Skip("Direct3D 12 is unavailable.");
+        var analyzer = DirectionalColorKeyAnalyzer.TryCreate();
+        Assert.NotNull(analyzer);
         return analyzer;
     }
 
