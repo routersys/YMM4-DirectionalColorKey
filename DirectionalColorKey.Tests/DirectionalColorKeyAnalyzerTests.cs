@@ -22,6 +22,26 @@ public sealed class DirectionalColorKeyAnalyzerTests
         return analyzer;
     }
 
+    static float Linear(int channel)
+    {
+        var c = channel / 255f;
+        return c <= 0.04045f ? c / 12.92f : MathF.Pow((c + 0.055f) / 1.055f, 2.4f);
+    }
+
+    static Vector3 Lab(int pixel)
+    {
+        var r = Linear((pixel >> 16) & 0xFF);
+        var g = Linear((pixel >> 8) & 0xFF);
+        var b = Linear(pixel & 0xFF);
+        var l = MathF.Cbrt(0.4122214708f * r + 0.5363325363f * g + 0.0514459929f * b);
+        var m = MathF.Cbrt(0.2119034982f * r + 0.6806995451f * g + 0.1073969566f * b);
+        var s = MathF.Cbrt(0.0883024619f * r + 0.2817188376f * g + 0.6299787005f * b);
+        return new(
+            0.2104542553f * l + 0.7936177850f * m - 0.0040720468f * s,
+            1.9779984951f * l - 2.4285922050f * m + 0.4505937099f * s,
+            0.0259040371f * l + 0.7827717662f * m - 0.8086757660f * s);
+    }
+
     static Vector3 WhiteDirection()
     {
         var direction = new Vector3(1f, 0f, 0f) - BackgroundLab;
@@ -164,5 +184,30 @@ public sealed class DirectionalColorKeyAnalyzerTests
 
         Assert.NotEqual(first, fresh.GetCenter(0));
         Assert.Equal(fresh.GetCenter(0), reused.GetCenter(0));
+    }
+
+    [Fact]
+    public void AnOpaqueScaleSitsInTheMiddleOfTheBinHoldingTheProjection()
+    {
+        var background = Lab(BackgroundPixel);
+        using var analyzer = CreateAnalyzer();
+
+        analyzer.Analyze(
+            CreateImage(128, 96),
+            128,
+            96,
+            background,
+            Vector3.Normalize(new Vector3(1f, 0f, 0f) - background),
+            1,
+            0.02f,
+            0.1f,
+            DirectionalColorKeyScaleMode.Opaque,
+            0.99f,
+            0.5f,
+            static (_, floorValue) => MathF.Max(floorValue, 0.5f),
+            true);
+        var projection = Vector3.Dot(Lab(ForegroundPixel) - background, analyzer.GetCenter(0));
+
+        Assert.Equal((MathF.Floor(projection * 256) + 0.5f) / 256, analyzer.GetLambda(0), 6);
     }
 }
