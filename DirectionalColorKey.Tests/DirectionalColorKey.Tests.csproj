@@ -25,7 +25,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\DirectionalColorKey\DirectionalColorKey.csproj" SetConfiguration="Configuration=$(Configuration)" SetPlatform="Platform=x64">
+    <ProjectReference Include="..\DirectionalColorKey\DirectionalColorKey.csproj" SetConfiguration="Configuration=$(Configuration)">
       <AdditionalProperties Condition="'$(BuildingSolutionFile)' != 'true'">SkipPluginDeploy=true</AdditionalProperties>
     </ProjectReference>
   </ItemGroup>
