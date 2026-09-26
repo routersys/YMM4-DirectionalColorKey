@@ -107,8 +107,9 @@ jobs:
             }
           }
 
+          New-Item -ItemType Directory -Path "$stageRoot/LICENSE" -Force | Out-Null
+          Copy-Item ".github/LICENSE/*.txt"     "$stageRoot/LICENSE/"
           Copy-Item ".github/Plugin_Readme.txt" "$stageRoot/Readme.txt"
-          Copy-Item ".github/ThirdPartyNotices.txt" "$stageRoot/ThirdPartyNotices.txt"
 
           Compress-Archive -Path "stage/*" -DestinationPath $pkgName -CompressionLevel Optimal
           echo "PKG_NAME=$pkgName" >> $env:GITHUB_OUTPUT

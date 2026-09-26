@@ -1,5 +1,5 @@
 ComputeWeave
-https://github.com/routersys/ComputeWeave/
+
 
 MIT License
 
@@ -23,13 +23,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-
----
-
-ComputeWeave is a fork of ComputeSharp and includes the following upstream work.
+====================================================================================
 
 ComputeSharp
-https://github.com/Sergio0694/ComputeSharp/
+
 
 MIT License
 
