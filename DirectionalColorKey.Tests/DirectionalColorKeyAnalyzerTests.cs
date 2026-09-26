@@ -142,4 +142,27 @@ public sealed class DirectionalColorKeyAnalyzerTests
         Assert.Equal(0.6f, smoothed, 5);
         Assert.Equal(0.9f, reset, 5);
     }
+
+    [Fact]
+    public void AnAnalyzerReusedAfterASmallChangeFindsTheSameCenterAsAFreshOne()
+    {
+        const int BluePixel = unchecked((int)0xFF0000FF);
+        using var reused = CreateAnalyzer();
+        using var fresh = CreateAnalyzer();
+        var before = CreateImage(128, 96);
+        var after = (int[])before.Clone();
+        for (var y = 8; y < 16; y++)
+        {
+            for (var x = 8; x < 16; x++)
+                after[y * 128 + x] = BluePixel;
+        }
+
+        Analyze(reused, before, 128, 96, 1, DirectionalColorKeyScaleMode.Physical);
+        var first = reused.GetCenter(0);
+        Analyze(reused, after, 128, 96, 1, DirectionalColorKeyScaleMode.Physical);
+        Analyze(fresh, after, 128, 96, 1, DirectionalColorKeyScaleMode.Physical);
+
+        Assert.NotEqual(first, fresh.GetCenter(0));
+        Assert.Equal(fresh.GetCenter(0), reused.GetCenter(0));
+    }
 }
