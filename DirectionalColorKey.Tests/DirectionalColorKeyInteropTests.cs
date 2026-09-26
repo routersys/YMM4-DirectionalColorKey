@@ -1,54 +1,93 @@
 using System.Numerics;
-using System.Runtime.InteropServices;
 using Vortice.Direct2D1;
-using Vortice.DXGI;
-using Vortice.Mathematics;
 using YukkuriMovieMaker.Commons;
-using PixelFormat = Vortice.DCommon.PixelFormat;
 
 namespace DirectionalColorKey.Tests;
 
+[Collection("Direct2D")]
 public sealed class DirectionalColorKeyInteropTests
 {
-    private const int Width = 96;
-    private const int Height = 64;
+    static readonly Bgra Green = Bgra.Opaque(0, 255, 0);
+    static readonly Bgra Magenta = Bgra.Opaque(180, 40, 200);
+    static readonly Vector3 BackgroundLab = new(0.8664f, -0.2339f, 0.1795f);
+    static readonly Vector3 BackgroundSrgb = new(0f, 1f, 0f);
 
-    private static readonly Vector3 BackgroundLab = new(0.8664f, -0.2339f, 0.1795f);
-    private static readonly Vector3 BackgroundSrgb = new(0f, 1f, 0f);
+    static Func<int, int, Bgra> CenteredRectangle(int width, int height)
+        => (x, y) => x >= width / 4 && x < width * 3 / 4 && y >= height / 4 && y < height * 3 / 4 ? Magenta : Green;
 
-    private static int[] CreateImage()
+    sealed class Interop : IDisposable
     {
-        int[] pixels = new int[Width * Height];
+        readonly ComputeExternalQueueScheduler scheduler;
+        readonly DirectionalColorKeyInteropProvider provider;
+        readonly ComputeInteropDomain domain;
 
-        for (int y = 0; y < Height; y++)
+        public GraphicsDevice Device { get; }
+
+        public DirectionalColorKeyResourceSet Resources { get; }
+
+        public DirectionalColorKeyAnalyzer Analyzer { get; }
+
+        Interop(ComputeExternalQueueScheduler scheduler, DirectionalColorKeyInteropProvider provider, GraphicsDevice device)
         {
-            for (int x = 0; x < Width; x++)
-            {
-                bool foreground = x >= Width / 4 && x < Width * 3 / 4 && y >= Height / 4 && y < Height * 3 / 4;
-
-                pixels[(y * Width) + x] = foreground
-                    ? unchecked((int)0xFFC828B4)
-                    : unchecked((int)0xFF00FF00);
-            }
+            this.scheduler = scheduler;
+            this.provider = provider;
+            Device = device;
+            domain = device.RegisterExternalDomain(provider);
+            Resources = DirectionalColorKeyResourceSet.Create(device, domain);
+            Analyzer = DirectionalColorKeyAnalyzer.TryCreate(device)!;
         }
 
-        return pixels;
+        public static Interop Create(IGraphicsDevicesAndContext devices)
+        {
+            var scheduler = ComputeExternalQueueScheduler.Create();
+            var provider = DirectionalColorKeyInteropProvider.TryCreate(devices, scheduler, out var device);
+            if (provider is null || device is null)
+            {
+                scheduler.Dispose();
+                Assert.Skip("Direct3D 11 and Direct3D 12 sharing is unavailable.");
+            }
+
+            return new Interop(scheduler, provider, device);
+        }
+
+        public void Draw(ID2D1Image image)
+        {
+            var context = provider.RenderContext;
+            using var borrow = Resources.BeginSourceExternalOperation();
+            var previousTarget = context.Target;
+            using var target = new ID2D1Bitmap1(borrow.DangerousGetView().AddRefBitmap());
+            context.Target = target;
+            context.BeginDraw();
+            context.Clear(null);
+            context.DrawImage(image, Vector2.Zero, null, InterpolationMode.NearestNeighbor, CompositeMode.SourceCopy);
+            context.EndDraw();
+            context.Target = previousTarget;
+        }
+
+        public Rendering CaptureForeground(IGraphicsDevicesAndContext devices)
+        {
+            using var lease = Resources.AcquireForegroundExternalViewLease();
+            using var bitmap = new ID2D1Bitmap1(lease.DangerousGetView().AddRefBitmap());
+            return Rendering.Capture(devices, bitmap);
+        }
+
+        public void Dispose()
+        {
+            Analyzer.Dispose();
+            Resources.Dispose();
+            Resources.WaitForDisposal();
+            domain.Dispose();
+            domain.WaitForDisposal();
+            provider.Dispose();
+            scheduler.Dispose();
+        }
     }
 
-    private static ID2D1Bitmap1 CreateBitmap(IGraphicsDevicesAndContext graphicsContext, BitmapOptions options)
-        => graphicsContext.DeviceContext.CreateBitmap(
-            new SizeI(Width, Height),
-            new BitmapProperties1(
-                new PixelFormat(Format.B8G8R8A8_UNorm, Vortice.DCommon.AlphaMode.Premultiplied),
-                96f,
-                96f,
-                options));
-
-    private static void Analyze(DirectionalColorKeyAnalyzer analyzer, ReadOnlySpan<int> pixels)
+    static void Analyze(DirectionalColorKeyAnalyzer analyzer, ReadOnlySpan<int> pixels, int width, int height)
         => analyzer.Analyze(
             pixels,
-            Width,
-            Height,
+            width,
+            height,
             BackgroundLab,
             Vector3.Normalize(new Vector3(1f, 0f, 0f) - BackgroundLab),
             1,
@@ -60,98 +99,64 @@ public sealed class DirectionalColorKeyInteropTests
             static (_, floorValue) => MathF.Max(floorValue, 0.5f),
             true);
 
-    [Fact]
-    public void SharedTextureRoundTripPreservesEveryPixel()
+    static int[] Pixels(SourceImage source)
     {
-        using var devices = new GraphicsDevices();
-        using var graphicsContext = devices.CreateContext();
-        using var scheduler = ComputeExternalQueueScheduler.Create();
-        using var provider = DirectionalColorKeyInteropProvider.TryCreate(graphicsContext, scheduler, out var interopDevice);
-        if (provider is null || interopDevice is null)
+        var pixels = new int[source.Width * source.Height];
+        for (var y = 0; y < source.Height; y++)
         {
-            Assert.Skip("Direct3D 11 and Direct3D 12 sharing is unavailable.");
-            return;
-        }
-
-        using var domain = interopDevice.RegisterExternalDomain(provider);
-        using var resourceSet = DirectionalColorKeyResourceSet.Create(interopDevice, domain);
-        using var shared = DirectionalColorKeyAnalyzer.TryCreate(interopDevice);
-        using var direct = DirectionalColorKeyAnalyzer.TryCreate(interopDevice);
-
-        Assert.NotNull(shared);
-        Assert.NotNull(direct);
-        Assert.True(resourceSet.TryEnsureSource(Width, Height, out _));
-        Assert.True(resourceSet.TryEnsureForeground(Width, Height, out _));
-
-        int[] pixels = CreateImage();
-
-        using var inputBitmap = CreateBitmap(graphicsContext, BitmapOptions.None);
-        var pinned = GCHandle.Alloc(pixels, GCHandleType.Pinned);
-        try
-        {
-            inputBitmap.CopyFromMemory(pinned.AddrOfPinnedObject(), Width * sizeof(int));
-        }
-        finally
-        {
-            pinned.Free();
-        }
-
-        var renderContext = provider.RenderContext;
-        using (var borrow = resourceSet.BeginSourceExternalOperation())
-        {
-            var previousTarget = renderContext.Target;
-
-            using var sourceBitmap = new ID2D1Bitmap1(borrow.DangerousGetView().AddRefBitmap());
-
-            renderContext.Target = sourceBitmap;
-            renderContext.BeginDraw();
-            renderContext.Clear(null);
-            renderContext.DrawImage(
-                inputBitmap,
-                new Vector2(0f, 0f),
-                null,
-                InterpolationMode.NearestNeighbor,
-                CompositeMode.SourceCopy);
-            renderContext.EndDraw();
-            renderContext.Target = previousTarget;
-        }
-
-        shared!.CaptureSource(resourceSet.GetSourceComputeBinding(), Width, Height);
-        Analyze(shared, default);
-        Analyze(direct!, pixels);
-
-        int[] sharedField = shared.BuildForegroundField(Width, Height, BackgroundLab, BackgroundSrgb).ToArray();
-        int[] directField = direct.BuildForegroundField(Width, Height, BackgroundLab, BackgroundSrgb).ToArray();
-
-        Assert.Contains(directField, value => value != 0);
-        Assert.Equal(directField, sharedField);
-        Assert.Equal(direct.GetCenter(0), shared.GetCenter(0));
-        Assert.Equal(direct.GetLambda(0), shared.GetLambda(0));
-
-        shared.WriteForegroundField(resourceSet.GetForegroundComputeBinding(), Width, Height, BackgroundLab, BackgroundSrgb);
-
-        using var lease = resourceSet.AcquireForegroundExternalViewLease();
-        using var foregroundBitmap = new ID2D1Bitmap1(lease.DangerousGetView().AddRefBitmap());
-        using var staging = CreateBitmap(graphicsContext, BitmapOptions.CpuRead | BitmapOptions.CannotDraw);
-
-        staging.CopyFromBitmap(foregroundBitmap);
-
-        var mapped = staging.Map(MapOptions.Read);
-        try
-        {
-            for (int y = 0; y < Height; y++)
+            for (var x = 0; x < source.Width; x++)
             {
-                for (int x = 0; x < Width; x++)
-                {
-                    int actual = Marshal.ReadInt32(mapped.Bits + (nint)((y * mapped.Pitch) + (x * sizeof(int))));
-
-                    Assert.Equal(directField[(y * Width) + x], actual);
-                }
+                var (blue, green, red, alpha) = source[x, y];
+                pixels[y * source.Width + x] = alpha << 24 | red << 16 | green << 8 | blue;
             }
         }
-        finally
-        {
-            staging.Unmap();
-        }
+
+        return pixels;
+    }
+
+    static Bgra Unpack(int value) => new((byte)value, (byte)(value >> 8), (byte)(value >> 16), (byte)(value >> 24));
+
+    [Fact]
+    public void TheSharedSourceIsAnalyzedLikeTheSamePixelsSentFromTheCpu()
+    {
+        using var devices = new GraphicsDevices();
+        using var context = devices.CreateContext();
+        using var interop = Interop.Create(context);
+        using var source = new SourceImage(context, 96, 64, CenteredRectangle(96, 64));
+        using var direct = DirectionalColorKeyAnalyzer.TryCreate(interop.Device)!;
+        Assert.True(interop.Resources.TryEnsureSource(96, 64, out _));
+        interop.Draw(source.Bitmap);
+
+        interop.Analyzer.CaptureSource(interop.Resources.GetSourceComputeBinding(), 96, 64);
+        Analyze(interop.Analyzer, default, 96, 64);
+        Analyze(direct, Pixels(source), 96, 64);
+
+        var expected = direct.BuildForegroundField(96, 64, BackgroundLab, BackgroundSrgb).ToArray();
+        Assert.Contains(expected, value => value != 0);
+        Assert.Equal(expected, interop.Analyzer.BuildForegroundField(96, 64, BackgroundLab, BackgroundSrgb).ToArray());
+        Assert.Equal(direct.GetCenter(0), interop.Analyzer.GetCenter(0));
+        Assert.Equal(direct.GetLambda(0), interop.Analyzer.GetLambda(0));
+    }
+
+    [Fact]
+    public void TheForegroundFieldReachesTheSharedTextureUnchanged()
+    {
+        using var devices = new GraphicsDevices();
+        using var context = devices.CreateContext();
+        using var interop = Interop.Create(context);
+        using var source = new SourceImage(context, 96, 64, CenteredRectangle(96, 64));
+        Assert.True(interop.Resources.TryEnsureSource(96, 64, out _));
+        Assert.True(interop.Resources.TryEnsureForeground(96, 64, out _));
+        interop.Draw(source.Bitmap);
+        interop.Analyzer.CaptureSource(interop.Resources.GetSourceComputeBinding(), 96, 64);
+        Analyze(interop.Analyzer, default, 96, 64);
+        var field = interop.Analyzer.BuildForegroundField(96, 64, BackgroundLab, BackgroundSrgb).ToArray();
+
+        interop.Analyzer.WriteForegroundField(interop.Resources.GetForegroundComputeBinding(), 96, 64, BackgroundLab, BackgroundSrgb);
+        var rendering = interop.CaptureForeground(context);
+
+        Assert.Contains(field, value => value != 0);
+        Assert.Equal((0, 0, 96, 64), (rendering.Left, rendering.Top, rendering.Width, rendering.Height));
+        Assert.All(rendering.Coordinates(), point => Assert.Equal(Unpack(field[point.Y * 96 + point.X]), rendering[point.X, point.Y]));
     }
 }
