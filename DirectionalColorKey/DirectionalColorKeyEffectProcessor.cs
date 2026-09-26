@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Numerics;
 using Vortice;
 using Vortice.Direct2D1;
@@ -67,9 +68,18 @@ namespace DirectionalColorKey
 			var scheduler = ComputeExternalQueueScheduler.Create();
 			interopProvider = DirectionalColorKeyInteropProvider.TryCreate(devices, scheduler, out var interopDevice);
 
-			analyzer = interopDevice is null
-				? DirectionalColorKeyAnalyzer.TryCreate()
-				: DirectionalColorKeyAnalyzer.TryCreate(interopDevice);
+			try
+			{
+				analyzer = interopDevice is null
+					? DirectionalColorKeyAnalyzer.TryCreate()
+					: DirectionalColorKeyAnalyzer.TryCreate(interopDevice);
+			}
+			catch
+			{
+				interopProvider?.Dispose();
+				scheduler.Dispose();
+				throw;
+			}
 
 			if (analyzer is not null)
 				disposer.Collect(analyzer);
@@ -87,7 +97,7 @@ namespace DirectionalColorKey
 				interopDomain = interopDevice.RegisterExternalDomain(interopProvider);
 				resourceSet = DirectionalColorKeyResourceSet.Create(interopDevice, interopDomain);
 			}
-			catch
+			catch (Win32Exception)
 			{
 				ReleaseInterop();
 
@@ -95,6 +105,12 @@ namespace DirectionalColorKey
 				interopDomain = null;
 				interopProvider = null;
 				this.scheduler = null;
+			}
+			catch
+			{
+				ReleaseInterop();
+				analyzer?.Dispose();
+				throw;
 			}
 		}
 

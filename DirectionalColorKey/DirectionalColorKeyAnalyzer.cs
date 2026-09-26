@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Numerics;
 
 namespace DirectionalColorKey
@@ -81,7 +82,7 @@ namespace DirectionalColorKey
             {
                 return new DirectionalColorKeyAnalyzer(device);
             }
-            catch
+            catch (Win32Exception)
             {
                 return null;
             }
