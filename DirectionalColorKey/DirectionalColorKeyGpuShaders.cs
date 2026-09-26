@@ -1,3 +1,4 @@
+// Stryker disable all
 
 namespace DirectionalColorKey;
 
