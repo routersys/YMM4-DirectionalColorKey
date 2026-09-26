@@ -49,4 +49,12 @@ public sealed class TextsTests
         Assert.Equal("方向色分離キー", neutral);
         Assert.Equal(neutral, Texts.ResourceManager.GetString(nameof(Texts.DirectionalColorKeyEffectName), CultureInfo.GetCultureInfo("ja-JP")));
     }
+
+    [Fact]
+    public void TheUpdateMessageEmbedsTheVersion()
+    {
+        var message = string.Format(CultureInfo.InvariantCulture, Texts.ResourceManager.GetString(nameof(Texts.UpdateAvailableMessage), CultureInfo.InvariantCulture)!, "v1.2.3");
+
+        Assert.Contains("v1.2.3", message);
+    }
 }
