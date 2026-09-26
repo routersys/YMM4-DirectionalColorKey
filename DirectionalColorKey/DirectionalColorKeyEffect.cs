@@ -73,7 +73,17 @@ namespace DirectionalColorKey
         public override IEnumerable<string> CreateExoVideoFilters(int keyFrameIndex, ExoOutputDescription exoOutputDescription) => [];
 
         public override IVideoEffectProcessor CreateVideoEffect(IGraphicsDevicesAndContext devices)
-            => new DirectionalColorKeyEffectProcessor(devices, this);
+        {
+            try
+            {
+                return new DirectionalColorKeyEffectProcessor(devices, this);
+            }
+            catch (Exception exception)
+            {
+                DirectionalColorKeyTelemetry.Report(exception);
+                throw;
+            }
+        }
 
         protected override IEnumerable<IAnimatable> GetAnimatables() => [ClusterCount, OpaquePercentile, NoiseThreshold, SigmaColor, EdgeSoftness, SpillStrength, DespillBias];
     }

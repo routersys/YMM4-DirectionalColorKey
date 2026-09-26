@@ -145,6 +145,19 @@ namespace DirectionalColorKey
 
 		protected override void setInput(ID2D1Image? input)
 		{
+			try
+			{
+				SetInputCore(input);
+			}
+			catch (Exception exception)
+			{
+				DirectionalColorKeyTelemetry.Report(exception);
+				throw;
+			}
+		}
+
+		private void SetInputCore(ID2D1Image? input)
+		{
 			effect?.SetInput(0, input, true);
 		}
 
@@ -165,6 +178,11 @@ namespace DirectionalColorKey
 					ReleaseInterop();
 				}
 			}
+			catch (Exception exception)
+			{
+				DirectionalColorKeyTelemetry.Report(exception);
+				throw;
+			}
 			finally
 			{
 				base.Dispose(disposing);
@@ -172,6 +190,19 @@ namespace DirectionalColorKey
 		}
 
 		public override DrawDescription Update(EffectDescription effectDescription)
+		{
+			try
+			{
+				return UpdateCore(effectDescription);
+			}
+			catch (Exception exception)
+			{
+				DirectionalColorKeyTelemetry.Report(exception);
+				throw;
+			}
+		}
+
+		private DrawDescription UpdateCore(EffectDescription effectDescription)
 		{
 			if (IsPassThroughEffect || effect is null || foregroundPlacement is null || analyzer is null || input is null)
 				return effectDescription.DrawDescription;
