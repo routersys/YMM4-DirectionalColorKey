@@ -35,7 +35,6 @@ namespace DirectionalColorKey
 		private DirectionalColorKeyInteropProvider? interopProvider;
 		private ComputeInteropDomain? interopDomain;
 		private DirectionalColorKeyResourceSet? resourceSet;
-		private DirectionalColorKeyInteropHost? interopHost;
 		private ExternalTextureLease<ExternalDirect3D11TextureView>? foregroundLease;
 
 		private bool isFirst = true;
@@ -85,13 +84,11 @@ namespace DirectionalColorKey
 			{
 				interopDomain = interopDevice.RegisterExternalDomain(interopProvider);
 				resourceSet = DirectionalColorKeyResourceSet.Create(interopDevice, interopDomain);
-				interopHost = DirectionalColorKeyInteropHost.Create(interopDevice, DirectionalColorKeyAnalyzer.MaximumPendingSubmissions);
 			}
 			catch
 			{
 				ReleaseInterop();
 
-				interopHost = null;
 				resourceSet = null;
 				interopDomain = null;
 				interopProvider = null;
@@ -99,15 +96,13 @@ namespace DirectionalColorKey
 			}
 		}
 
-		private bool IsInteropAvailable => interopHost is not null && resourceSet is not null && interopProvider is not null;
+		private bool IsInteropAvailable => resourceSet is not null && interopProvider is not null;
 
 		private void ReleaseInterop()
 		{
 			foregroundLease?.Dispose();
 			foregroundLease = null;
 
-			interopHost?.Dispose();
-			interopHost?.WaitForDisposal();
 			resourceSet?.Dispose();
 			resourceSet?.WaitForDisposal();
 			interopDomain?.Dispose();
@@ -381,11 +376,7 @@ namespace DirectionalColorKey
 				renderContext.Target = previousTarget;
 			}
 
-			interopHost!.CaptureSource(
-				resourceSet.GetSourceComputeBinding(),
-				analyzer!.PrepareSource(width, height),
-				width,
-				height).Wait();
+			analyzer!.CaptureSource(resourceSet.GetSourceComputeBinding(), width, height);
 
 			return analyzer.DetectSourceChange();
 		}
@@ -393,11 +384,7 @@ namespace DirectionalColorKey
 		// 前景は初期所有者が計算キューであるため、往復を1度通すまで外部側は貸与を取れない。
 		private void WriteForegroundToSharedTexture(int width, int height, Vector3 backgroundLab, Vector3 backgroundSrgb)
 		{
-			interopHost!.WriteForegroundField(
-				resourceSet!.GetForegroundComputeBinding(),
-				analyzer!.BuildForegroundFieldView(width, height, backgroundLab, backgroundSrgb),
-				width,
-				height).Wait();
+			analyzer!.WriteForegroundField(resourceSet!.GetForegroundComputeBinding(), width, height, backgroundLab, backgroundSrgb);
 
 			foregroundLease ??= resourceSet.AcquireForegroundExternalViewLease();
 		}

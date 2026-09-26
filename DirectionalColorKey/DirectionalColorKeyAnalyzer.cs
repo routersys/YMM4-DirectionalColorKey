@@ -34,7 +34,7 @@ namespace DirectionalColorKey
         private const float IncrementalChangeCeiling = 0.25f;
         private const int PropagateIterations = 16;
         private const float LineSigmaSquared = 0.1225f;
-        internal const int MaximumPendingSubmissions = 32;
+        private const int MaximumPendingSubmissions = 32;
         private const int SrgbTableLength = 256;
 
         private readonly float[] centers = new float[MaxClusters * 3];
@@ -94,11 +94,11 @@ namespace DirectionalColorKey
 
         public float GetLambda(int cluster) => lambdas[cluster];
 
-        public ReadWriteBuffer<int> PrepareSource(int width, int height)
+        public void CaptureSource(ComputeResourceBinding<ReadWriteTexture2D<Bgra32, Float4>> source, int width, int height)
         {
             EnsureCapacity(width, height);
 
-            return EnsureBgraBuffer();
+            pipelineHost.CaptureSource(source, EnsureBgraBuffer(), width, height).Wait();
         }
 
         // 元画素の差分検出。CPUへ読み戻すのは変化画素数の1要素だけとする。
@@ -116,9 +116,16 @@ namespace DirectionalColorKey
             return counts[0] > 0;
         }
 
-        public IReadOnlyBuffer<int> BuildForegroundFieldView(int width, int height, Vector3 backgroundLab, Vector3 backgroundSrgb)
+        public void WriteForegroundField(
+            ComputeResourceBinding<ReadWriteTexture2D<Bgra32, Float4>> destination,
+            int width,
+            int height,
+            Vector3 backgroundLab,
+            Vector3 backgroundSrgb)
         {
-            return BuildForegroundFieldOnGpu(width, height, backgroundLab, backgroundSrgb).AsReadOnly();
+            var foreground = BuildForegroundFieldOnGpu(width, height, backgroundLab, backgroundSrgb);
+
+            pipelineHost.WriteForegroundField(destination, foreground.AsReadOnly(), width, height).Wait();
         }
 
         public void Analyze(

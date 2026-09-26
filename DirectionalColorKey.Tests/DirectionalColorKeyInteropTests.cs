@@ -13,6 +13,9 @@ public sealed class DirectionalColorKeyInteropTests
     private const int Width = 96;
     private const int Height = 64;
 
+    private static readonly Vector3 BackgroundLab = new(0.8664f, -0.2339f, 0.1795f);
+    private static readonly Vector3 BackgroundSrgb = new(0f, 1f, 0f);
+
     private static int[] CreateImage()
     {
         int[] pixels = new int[Width * Height];
@@ -24,7 +27,7 @@ public sealed class DirectionalColorKeyInteropTests
                 bool foreground = x >= Width / 4 && x < Width * 3 / 4 && y >= Height / 4 && y < Height * 3 / 4;
 
                 pixels[(y * Width) + x] = foreground
-                    ? unchecked((int)0xFFC83C28)
+                    ? unchecked((int)0xFFC828B4)
                     : unchecked((int)0xFF00FF00);
             }
         }
@@ -41,6 +44,22 @@ public sealed class DirectionalColorKeyInteropTests
                 96f,
                 options));
 
+    private static void Analyze(DirectionalColorKeyAnalyzer analyzer, ReadOnlySpan<int> pixels)
+        => analyzer.Analyze(
+            pixels,
+            Width,
+            Height,
+            BackgroundLab,
+            Vector3.Normalize(new Vector3(1f, 0f, 0f) - BackgroundLab),
+            1,
+            0.02f,
+            0.1f,
+            DirectionalColorKeyScaleMode.Physical,
+            0.99f,
+            0.5f,
+            static (_, floorValue) => MathF.Max(floorValue, 0.5f),
+            true);
+
     [Fact]
     public void SharedTextureRoundTripPreservesEveryPixel()
     {
@@ -56,10 +75,11 @@ public sealed class DirectionalColorKeyInteropTests
 
         using var domain = interopDevice.RegisterExternalDomain(provider);
         using var resourceSet = DirectionalColorKeyResourceSet.Create(interopDevice, domain);
-        using var interopHost = DirectionalColorKeyInteropHost.Create(interopDevice, 2);
-        using var analyzer = DirectionalColorKeyAnalyzer.TryCreate(interopDevice);
+        using var shared = DirectionalColorKeyAnalyzer.TryCreate(interopDevice);
+        using var direct = DirectionalColorKeyAnalyzer.TryCreate(interopDevice);
 
-        Assert.NotNull(analyzer);
+        Assert.NotNull(shared);
+        Assert.NotNull(direct);
         Assert.True(resourceSet.TryEnsureSource(Width, Height, out _));
         Assert.True(resourceSet.TryEnsureForeground(Width, Height, out _));
 
@@ -96,19 +116,19 @@ public sealed class DirectionalColorKeyInteropTests
             renderContext.Target = previousTarget;
         }
 
-        var captured = analyzer!.PrepareSource(Width, Height);
+        shared!.CaptureSource(resourceSet.GetSourceComputeBinding(), Width, Height);
+        Analyze(shared, default);
+        Analyze(direct!, pixels);
 
-        interopHost.CaptureSource(resourceSet.GetSourceComputeBinding(), captured, Width, Height).Wait();
+        int[] sharedField = shared.BuildForegroundField(Width, Height, BackgroundLab, BackgroundSrgb).ToArray();
+        int[] directField = direct.BuildForegroundField(Width, Height, BackgroundLab, BackgroundSrgb).ToArray();
 
-        int[] capturedPixels = new int[Width * Height];
-        captured.CopyTo(capturedPixels);
+        Assert.Contains(directField, value => value != 0);
+        Assert.Equal(directField, sharedField);
+        Assert.Equal(direct.GetCenter(0), shared.GetCenter(0));
+        Assert.Equal(direct.GetLambda(0), shared.GetLambda(0));
 
-        Assert.Equal(pixels, capturedPixels);
-
-        using var field = interopDevice.AllocateReadWriteBuffer(pixels);
-
-        interopHost.WriteForegroundField(
-            resourceSet.GetForegroundComputeBinding(), field.AsReadOnly(), Width, Height).Wait();
+        shared.WriteForegroundField(resourceSet.GetForegroundComputeBinding(), Width, Height, BackgroundLab, BackgroundSrgb);
 
         using var lease = resourceSet.AcquireForegroundExternalViewLease();
         using var foregroundBitmap = new ID2D1Bitmap1(lease.DangerousGetView().AddRefBitmap());
@@ -125,7 +145,7 @@ public sealed class DirectionalColorKeyInteropTests
                 {
                     int actual = Marshal.ReadInt32(mapped.Bits + (nint)((y * mapped.Pitch) + (x * sizeof(int))));
 
-                    Assert.Equal(pixels[(y * Width) + x], actual);
+                    Assert.Equal(directField[(y * Width) + x], actual);
                 }
             }
         }

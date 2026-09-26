@@ -273,6 +273,34 @@ namespace DirectionalColorKey
             }
         }
 
+        [ComputePipeline]
+        [ComputeInterop]
+        private void CaptureSource(
+            in ComputeContext context,
+            [ComputeResource(ComputeResourceAccess.ReadWrite, Sharing = ComputeResourceSharing.External)] ReadWriteTexture2D<Bgra32, Float4> source,
+            [ComputeResource(ComputeResourceAccess.ReadWrite)] ReadWriteBuffer<int> bgra,
+            int width,
+            int height)
+        {
+            _ = device;
+
+            context.For(width, height, new SharedTextureToBufferShader(source, bgra, width, height));
+        }
+
+        [ComputePipeline]
+        [ComputeInterop]
+        private void WriteForegroundField(
+            in ComputeContext context,
+            [ComputeResource(ComputeResourceAccess.ReadWrite, Sharing = ComputeResourceSharing.External)] ReadWriteTexture2D<Bgra32, Float4> destination,
+            [ComputeResource(ComputeResourceAccess.Read)] IReadOnlyBuffer<int> foreground,
+            int width,
+            int height)
+        {
+            _ = device;
+
+            context.For(width, height, new BufferToSharedTextureShader(foreground, destination, width, height));
+        }
+
         private static ReadWriteBuffer<float> SmoothedDirections(DirectionalColorKeyFrameResources frame, int iterations)
             => (iterations & 1) == 0 ? frame.DirectionsA : frame.DirectionsB;
     }
