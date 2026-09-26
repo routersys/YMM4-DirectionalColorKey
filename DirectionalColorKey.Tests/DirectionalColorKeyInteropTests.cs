@@ -139,6 +139,35 @@ public sealed class DirectionalColorKeyInteropTests
     }
 
     [Fact]
+    public void OnlyAChangedSourceIsReportedAsChanged()
+    {
+        using var devices = new GraphicsDevices();
+        using var context = devices.CreateContext();
+        using var interop = Interop.Create(context);
+        using var first = new SourceImage(context, 96, 64, CenteredRectangle(96, 64));
+        using var second = new SourceImage(context, 96, 64, (x, y) => x == 10 && y == 10 ? Magenta : CenteredRectangle(96, 64)(x, y));
+        Assert.True(interop.Resources.TryEnsureSource(96, 64, out _));
+        interop.Draw(first.Bitmap);
+        interop.Analyzer.CaptureSource(interop.Resources.GetSourceComputeBinding(), 96, 64);
+        Analyze(interop.Analyzer, default, 96, 64);
+
+        interop.Draw(first.Bitmap);
+        interop.Analyzer.CaptureSource(interop.Resources.GetSourceComputeBinding(), 96, 64);
+        var unchanged = interop.Analyzer.DetectSourceChange();
+        interop.Draw(second.Bitmap);
+        interop.Analyzer.CaptureSource(interop.Resources.GetSourceComputeBinding(), 96, 64);
+        var changed = interop.Analyzer.DetectSourceChange();
+        Analyze(interop.Analyzer, default, 96, 64);
+        interop.Draw(second.Bitmap);
+        interop.Analyzer.CaptureSource(interop.Resources.GetSourceComputeBinding(), 96, 64);
+        var settled = interop.Analyzer.DetectSourceChange();
+
+        Assert.False(unchanged);
+        Assert.True(changed);
+        Assert.False(settled);
+    }
+
+    [Fact]
     public void TheForegroundFieldReachesTheSharedTextureUnchanged()
     {
         using var devices = new GraphicsDevices();
