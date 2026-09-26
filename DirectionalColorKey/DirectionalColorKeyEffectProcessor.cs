@@ -85,7 +85,7 @@ namespace DirectionalColorKey
 			{
 				interopDomain = interopDevice.RegisterExternalDomain(interopProvider);
 				resourceSet = DirectionalColorKeyResourceSet.Create(interopDevice, interopDomain);
-				interopHost = DirectionalColorKeyInteropHost.Create(interopDevice, 2);
+				interopHost = DirectionalColorKeyInteropHost.Create(interopDevice, DirectionalColorKeyAnalyzer.MaximumPendingSubmissions);
 			}
 			catch
 			{
