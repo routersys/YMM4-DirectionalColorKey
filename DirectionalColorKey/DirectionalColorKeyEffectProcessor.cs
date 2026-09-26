@@ -1,6 +1,7 @@
 using System.Numerics;
 using Vortice;
 using Vortice.Direct2D1;
+using Vortice.Direct2D1.Effects;
 using Vortice.DCommon;
 using Vortice.DXGI;
 using Vortice.Mathematics;
@@ -21,6 +22,8 @@ namespace DirectionalColorKey
 		private DirectionalColorKeyAnalyzer? analyzer;
 
 		private DirectionalColorKeyCustomEffect? effect;
+		private AffineTransform2D? foregroundPlacement;
+		private ID2D1Image? foregroundPlacementOutput;
 
 		private ID2D1Bitmap1? sourceBitmap;
 		private ID2D1Bitmap1? sourceStagingBitmap;
@@ -126,6 +129,16 @@ namespace DirectionalColorKey
 			}
 			disposer.Collect(effect);
 
+			foregroundPlacement = new AffineTransform2D(devices.DeviceContext)
+			{
+				InterPolationMode = AffineTransform2DInterpolationMode.NearestNeighbor,
+				BorderMode = BorderMode.Hard,
+			};
+			disposer.Collect(foregroundPlacement);
+			foregroundPlacementOutput = foregroundPlacement.Output;
+			disposer.Collect(foregroundPlacementOutput);
+			effect.SetInput(1, foregroundPlacementOutput, true);
+
 			var output = effect.Output;
 			disposer.Collect(output);
 			return output;
@@ -139,7 +152,7 @@ namespace DirectionalColorKey
 		protected override void ClearEffectChain()
 		{
 			effect?.SetInput(0, null, true);
-			effect?.SetInput(1, null, true);
+			foregroundPlacement?.SetInput(0, null, true);
 			hasAnalysisCache = false;
 		}
 
@@ -161,7 +174,7 @@ namespace DirectionalColorKey
 
 		public override DrawDescription Update(EffectDescription effectDescription)
 		{
-			if (IsPassThroughEffect || effect is null || analyzer is null || input is null)
+			if (IsPassThroughEffect || effect is null || foregroundPlacement is null || analyzer is null || input is null)
 				return effectDescription.DrawDescription;
 
 			var frame = effectDescription.ItemPosition.Frame;
@@ -261,14 +274,16 @@ namespace DirectionalColorKey
 
 					using var sharedForegroundBitmap = new ID2D1Bitmap1(foregroundLease!.DangerousGetView().AddRefBitmap());
 
-					effect.SetInput(1, sharedForegroundBitmap, true);
+					foregroundPlacement.SetInput(0, sharedForegroundBitmap, true);
 				}
 				else
 				{
 					var foregroundField = analyzer.BuildForegroundField(width, height, backgroundLab, backgroundSrgb);
 					UploadForegroundField(dc, foregroundField, width, height);
-					effect.SetInput(1, foregroundBitmap, true);
+					foregroundPlacement.SetInput(0, foregroundBitmap, true);
 				}
+
+				foregroundPlacement.TransformMatrix = Matrix3x2.CreateTranslation(bounds.Left, bounds.Top);
 
 				hasAnalysisCache = true;
 			}
