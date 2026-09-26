@@ -49,6 +49,23 @@ public sealed class DirectionalColorKeyEffectProcessorTests
 
     static Bgra GreenWithSquare(int x, int y) => x is >= 32 and < 64 && y is >= 16 and < 48 ? Magenta : Bgra.Opaque(0, 255, 0);
 
+    static byte Encode(double linear) => (byte)Math.Round(255 * (linear <= 0.0031308 ? 12.92 * linear : 1.055 * Math.Pow(linear, 1 / 2.4) - 0.055));
+
+    static double Decode(byte value)
+    {
+        var c = value / 255.0;
+        return c <= 0.04045 ? c / 12.92 : Math.Pow((c + 0.055) / 1.055, 2.4);
+    }
+
+    static Bgra MixInLinearLight(Bgra under, Bgra over, double coverage)
+    {
+        byte Channel(byte a, byte b) => Encode(Decode(a) + (Decode(b) - Decode(a)) * coverage);
+        return Bgra.Opaque(Channel(under.Blue, over.Blue), Channel(under.Green, over.Green), Channel(under.Red, over.Red));
+    }
+
+    static Bgra GreenWithHalfCoveredEdge(int x, int y)
+        => x == 31 && y is >= 16 and < 48 ? MixInLinearLight(Bgra.Opaque(0, 255, 0), Magenta, 0.5) : GreenWithSquare(x, y);
+
     static Animation Linear(double from, double to)
         => Json.LoadFromText<Animation>(string.Create(CultureInfo.InvariantCulture, $$"""{"AnimationType":"直線移動","Values":[{"Value":{{from}}},{"Value":{{to}}}]}"""))!;
 
@@ -98,6 +115,25 @@ public sealed class DirectionalColorKeyEffectProcessorTests
                 Assert.True(Math.Abs(pixel.Blue - Magenta.Blue) <= 1 && Math.Abs(pixel.Green - Magenta.Green) <= 1 && Math.Abs(pixel.Red - Magenta.Red) <= 1 && pixel.Alpha == byte.MaxValue, $"({point.X}, {point.Y}) {pixel}");
             else
                 Assert.Equal(Bgra.Transparent, pixel);
+        });
+    }
+
+    [Fact]
+    public void HalfTheEdgeSoftnessKeepsOpaquePixelsAndDropsHalfCoveredOnes()
+    {
+        RequireDirect3D12();
+        using var devices = new GraphicsDevices();
+        using var context = devices.CreateContext();
+        using var source = new SourceImage(context, Width, Height, GreenWithHalfCoveredEdge);
+        var effect = new DirectionalColorKeyEffect();
+        effect.EdgeSoftness.Values[0].Value = 50;
+
+        var rendering = RenderFresh(context, effect, source.Bitmap);
+
+        Assert.All(Enumerable.Range(16, 32), y =>
+        {
+            Assert.True(rendering[31, y].Alpha <= 2, $"(31, {y}) {rendering[31, y]}");
+            Assert.Equal(byte.MaxValue, rendering[48, y].Alpha);
         });
     }
 
