@@ -1,565 +1,564 @@
 using System.ComponentModel;
 using System.Numerics;
 
-namespace DirectionalColorKey
+namespace DirectionalColorKey;
+
+internal sealed class DirectionalColorKeyAnalyzer : IDisposable
 {
-    internal sealed class DirectionalColorKeyAnalyzer : IDisposable
+    private readonly GraphicsDevice device;
+    private readonly DirectionalColorKeyPipelineHost pipelineHost;
+
+    private ReadWriteBuffer<int>? bgraBuffer;
+    private ReadOnlyBuffer<float>? centerBuffer;
+    private ReadWriteBuffer<int>? accumBuffer;
+    private ReadWriteBuffer<int>? countBuffer;
+    private ReadWriteBuffer<int>? histogramBuffer;
+    private ReadWriteBuffer<int>? foregroundBufferA;
+    private ReadWriteBuffer<int>? foregroundBufferB;
+    private int[]? foregroundReadback;
+
+    private int width;
+    private int height;
+    private int pixelCount;
+
+    private const int MaxClusters = ClusterAccumulateConstants.MaxClusters;
+    private const int SmoothRadius = DirectionSmoothConstants.Radius;
+    private const int SmoothIterations = 5;
+    private const int LloydIterations = 12;
+    private const int ProjectionBins = 256;
+    private const float FixedPointScale = 64f;
+    private const float ProjectionHistogramRange = 1.0f;
+    private const float LambdaSmoothingAlpha = 0.25f;
+    private const float ConvergenceDot = 0.999995f;
+    private const int AdoptReach = SmoothRadius * SmoothIterations;
+    private const int GuardReach = SmoothRadius * SmoothIterations;
+    private const float IncrementalChangeCeiling = 0.25f;
+    private const int PropagateIterations = 16;
+    private const float LineSigmaSquared = 0.1225f;
+    private const int MaximumPendingSubmissions = 32;
+    private const int SrgbTableLength = 256;
+
+    private readonly float[] centers = new float[MaxClusters * 3];
+    private readonly int[] accumulators = new int[MaxClusters * 3 + MaxClusters];
+    private readonly int[] counts = new int[MaxClusters];
+    private readonly int[] histogram = new int[MaxClusters * ProjectionBins];
+    private readonly float[] lambdas = new float[MaxClusters];
+    private readonly float[] prevLambdas = new float[MaxClusters];
+    private readonly int[] zeroAccumulators = new int[MaxClusters * 3 + MaxClusters];
+    private readonly int[] zeroCounts = new int[MaxClusters];
+    private readonly int[] zeroHistogram = new int[MaxClusters * ProjectionBins];
+
+    private int clusterCount = 1;
+    private bool hasWarmStart;
+    private bool hasLambdaWarmStart;
+    private bool hasPreviousResult;
+    private int lastNoiseThresholdBits;
+    private int lastSigmaColorBits;
+    private int lastBackgroundLabXBits;
+    private int lastBackgroundLabYBits;
+    private int lastBackgroundLabZBits;
+
+    private DirectionalColorKeyAnalyzer(GraphicsDevice device)
     {
-        private readonly GraphicsDevice device;
-        private readonly DirectionalColorKeyPipelineHost pipelineHost;
+        this.device = device;
+        pipelineHost = DirectionalColorKeyPipelineHost.Create(device, MaximumPendingSubmissions);
+    }
 
-        private ReadWriteBuffer<int>? bgraBuffer;
-        private ReadOnlyBuffer<float>? centerBuffer;
-        private ReadWriteBuffer<int>? accumBuffer;
-        private ReadWriteBuffer<int>? countBuffer;
-        private ReadWriteBuffer<int>? histogramBuffer;
-        private ReadWriteBuffer<int>? foregroundBufferA;
-        private ReadWriteBuffer<int>? foregroundBufferB;
-        private int[]? foregroundReadback;
-
-        private int width;
-        private int height;
-        private int pixelCount;
-
-        private const int MaxClusters = ClusterAccumulateConstants.MaxClusters;
-        private const int SmoothRadius = DirectionSmoothConstants.Radius;
-        private const int SmoothIterations = 5;
-        private const int LloydIterations = 12;
-        private const int ProjectionBins = 256;
-        private const float FixedPointScale = 64f;
-        private const float ProjectionHistogramRange = 1.0f;
-        private const float LambdaSmoothingAlpha = 0.25f;
-        private const float ConvergenceDot = 0.999995f;
-        private const int AdoptReach = SmoothRadius * SmoothIterations;
-        private const int GuardReach = SmoothRadius * SmoothIterations;
-        private const float IncrementalChangeCeiling = 0.25f;
-        private const int PropagateIterations = 16;
-        private const float LineSigmaSquared = 0.1225f;
-        private const int MaximumPendingSubmissions = 32;
-        private const int SrgbTableLength = 256;
-
-        private readonly float[] centers = new float[MaxClusters * 3];
-        private readonly int[] accumulators = new int[MaxClusters * 3 + MaxClusters];
-        private readonly int[] counts = new int[MaxClusters];
-        private readonly int[] histogram = new int[MaxClusters * ProjectionBins];
-        private readonly float[] lambdas = new float[MaxClusters];
-        private readonly float[] prevLambdas = new float[MaxClusters];
-        private readonly int[] zeroAccumulators = new int[MaxClusters * 3 + MaxClusters];
-        private readonly int[] zeroCounts = new int[MaxClusters];
-        private readonly int[] zeroHistogram = new int[MaxClusters * ProjectionBins];
-
-        private int clusterCount = 1;
-        private bool hasWarmStart;
-        private bool hasLambdaWarmStart;
-        private bool hasPreviousResult;
-        private int lastNoiseThresholdBits;
-        private int lastSigmaColorBits;
-        private int lastBackgroundLabXBits;
-        private int lastBackgroundLabYBits;
-        private int lastBackgroundLabZBits;
-
-        private DirectionalColorKeyAnalyzer(GraphicsDevice device)
+    public static DirectionalColorKeyAnalyzer? TryCreate()
+    {
+        try
         {
-            this.device = device;
-            pipelineHost = DirectionalColorKeyPipelineHost.Create(device, MaximumPendingSubmissions);
+            return new DirectionalColorKeyAnalyzer(GraphicsDevice.GetDefault());
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public static DirectionalColorKeyAnalyzer? TryCreate(GraphicsDevice device)
+    {
+        try
+        {
+            return new DirectionalColorKeyAnalyzer(device);
+        }
+        catch (Win32Exception)
+        {
+            return null;
+        }
+    }
+
+    public int ClusterCount => clusterCount;
+
+    public Vector3 GetCenter(int cluster)
+        => new(centers[cluster * 3 + 0], centers[cluster * 3 + 1], centers[cluster * 3 + 2]);
+
+    public float GetLambda(int cluster) => lambdas[cluster];
+
+    public void CaptureSource(ComputeResourceBinding<ReadWriteTexture2D<Bgra32, Float4>> source, int width, int height)
+    {
+        EnsureCapacity(width, height);
+
+        pipelineHost.CaptureSource(source, EnsureBgraBuffer(), width, height).Wait();
+    }
+
+    // 元画素の差分検出。CPUへ読み戻すのは変化画素数の1要素だけとする。
+    public bool DetectSourceChange()
+    {
+        var bgraGpu = EnsureBgraBuffer();
+        var countGpu = EnsureCountBuffer();
+
+        countGpu.CopyFrom(zeroCounts.AsSpan(0, 1));
+
+        pipelineHost.RecordChangeCount(bgraGpu.AsReadOnly(), countGpu, width, height);
+
+        countGpu.CopyTo(counts.AsSpan(0, 1));
+
+        return counts[0] > 0;
+    }
+
+    public void WriteForegroundField(
+        ComputeResourceBinding<ReadWriteTexture2D<Bgra32, Float4>> destination,
+        int width,
+        int height,
+        Vector3 backgroundLab,
+        Vector3 backgroundSrgb)
+    {
+        var foreground = BuildForegroundFieldOnGpu(width, height, backgroundLab, backgroundSrgb);
+
+        pipelineHost.WriteForegroundField(destination, foreground.AsReadOnly(), width, height).Wait();
+    }
+
+    public void Analyze(
+        ReadOnlySpan<int> bgra,
+        int width,
+        int height,
+        Vector3 backgroundLab,
+        Vector3 whiteDirection,
+        int requestedClusters,
+        float noiseThreshold,
+        float sigmaColor,
+        DirectionalColorKeyScaleMode scaleMode,
+        float opaquePercentile,
+        float foregroundLambda,
+        Func<Vector3, float, float> physicalLambda,
+        bool resetLambdaSmoothing)
+    {
+        EnsureCapacity(width, height);
+
+        if (resetLambdaSmoothing)
+            hasLambdaWarmStart = false;
+
+        int targetClusters = Math.Clamp(requestedClusters, 1, MaxClusters);
+        int noiseThresholdBits = BitConverter.SingleToInt32Bits(noiseThreshold);
+        int sigmaColorBits = BitConverter.SingleToInt32Bits(sigmaColor);
+        int backgroundLabXBits = BitConverter.SingleToInt32Bits(backgroundLab.X);
+        int backgroundLabYBits = BitConverter.SingleToInt32Bits(backgroundLab.Y);
+        int backgroundLabZBits = BitConverter.SingleToInt32Bits(backgroundLab.Z);
+
+        var bgraGpu = EnsureBgraBuffer();
+
+        if (!bgra.IsEmpty)
+            bgraGpu.CopyFrom(bgra[..pixelCount]);
+
+        pipelineHost.RecordDisplacementField(
+            bgraGpu.AsReadOnly(),
+            backgroundLab.X, backgroundLab.Y, backgroundLab.Z,
+            noiseThreshold, width, height);
+
+        float sigmaColorSq = 2f * sigmaColor * sigmaColor;
+
+        bool canReuse = hasPreviousResult
+            && noiseThresholdBits == lastNoiseThresholdBits
+            && sigmaColorBits == lastSigmaColorBits
+            && backgroundLabXBits == lastBackgroundLabXBits
+            && backgroundLabYBits == lastBackgroundLabYBits
+            && backgroundLabZBits == lastBackgroundLabZBits;
+
+        if (!canReuse || !TryRunIncrementalSmooth(sigmaColorSq))
+            pipelineHost.RecordDirectionSmooth(sigmaColorSq, SmoothIterations, width, height);
+
+        pipelineHost.RecordPreviousSnapshot(bgraGpu.AsReadOnly(), SmoothIterations, width, height);
+        hasPreviousResult = true;
+        lastNoiseThresholdBits = noiseThresholdBits;
+        lastSigmaColorBits = sigmaColorBits;
+        lastBackgroundLabXBits = backgroundLabXBits;
+        lastBackgroundLabYBits = backgroundLabYBits;
+        lastBackgroundLabZBits = backgroundLabZBits;
+
+        InitializeCenters(targetClusters, whiteDirection);
+
+        var centerGpu = EnsureCenterBuffer();
+        var accumGpu = EnsureAccumBuffer();
+
+        int accumLength = clusterCount * 3 + clusterCount;
+
+        for (int iteration = 0; iteration < LloydIterations; iteration++)
+        {
+            centerGpu.CopyFrom(centers.AsSpan(0, clusterCount * 3));
+            accumGpu.CopyFrom(zeroAccumulators.AsSpan(0, accumLength));
+
+            pipelineHost.RecordClusterAssign(
+                centerGpu, accumGpu, SmoothIterations, clusterCount, FixedPointScale, width, height);
+
+            accumGpu.CopyTo(accumulators.AsSpan(0, accumLength));
+
+            bool converged = UpdateCenters(whiteDirection);
+            if (converged)
+                break;
         }
 
-        public static DirectionalColorKeyAnalyzer? TryCreate()
+        ComputeLambdas(backgroundLab, scaleMode, opaquePercentile, foregroundLambda, physicalLambda);
+
+        if (hasLambdaWarmStart)
         {
-            try
-            {
-                return new DirectionalColorKeyAnalyzer(GraphicsDevice.GetDefault());
-            }
-            catch
-            {
-                return null;
-            }
+            for (int c = 0; c < clusterCount; c++)
+                lambdas[c] = prevLambdas[c] + (lambdas[c] - prevLambdas[c]) * LambdaSmoothingAlpha;
         }
+        Array.Copy(lambdas, prevLambdas, clusterCount);
+        hasLambdaWarmStart = true;
 
-        public static DirectionalColorKeyAnalyzer? TryCreate(GraphicsDevice device)
+        hasWarmStart = true;
+    }
+
+    public ReadOnlySpan<int> BuildForegroundField(int width, int height, Vector3 backgroundLab, Vector3 backgroundSrgb)
+    {
+        var foregroundSource = BuildForegroundFieldOnGpu(width, height, backgroundLab, backgroundSrgb);
+
+        foregroundReadback ??= new int[pixelCount];
+        if (foregroundReadback.Length < pixelCount)
+            foregroundReadback = new int[pixelCount];
+
+        foregroundSource.CopyTo(foregroundReadback.AsSpan(0, pixelCount));
+        return foregroundReadback.AsSpan(0, pixelCount);
+    }
+
+    private ReadWriteBuffer<int> BuildForegroundFieldOnGpu(int width, int height, Vector3 backgroundLab, Vector3 backgroundSrgb)
+    {
+        EnsureCapacity(width, height);
+
+        float referencePerp = ComputeReferencePerp(backgroundLab);
+
+        var bgraGpu = EnsureBgraBuffer();
+        var foregroundSource = EnsureForegroundBufferA();
+        var foregroundTarget = EnsureForegroundBufferB();
+
+        pipelineHost.RecordForegroundField(
+            bgraGpu.AsReadOnly(), foregroundSource, foregroundTarget,
+            backgroundLab.X, backgroundLab.Y, backgroundLab.Z,
+            referencePerp,
+            backgroundSrgb.X, backgroundSrgb.Y, backgroundSrgb.Z,
+            LineSigmaSquared, PropagateIterations,
+            width, height);
+
+        return (PropagateIterations & 1) == 0 ? foregroundSource : foregroundTarget;
+    }
+
+    private static float ComputeReferencePerp(Vector3 backgroundLab)
+    {
+        float bgLenSq = Vector3.Dot(backgroundLab, backgroundLab);
+        if (bgLenSq <= 1e-8f)
+            return 0f;
+
+        var white = new Vector3(1f, 0f, 0f);
+        var dvec = white - backgroundLab;
+        float along = Vector3.Dot(dvec, backgroundLab) / bgLenSq;
+        var perp = dvec - along * backgroundLab;
+        return perp.Length();
+    }
+
+    private ReadWriteBuffer<int> EnsureForegroundBufferA()
+    {
+        if (foregroundBufferA is null || foregroundBufferA.Length < pixelCount)
         {
-            try
-            {
-                return new DirectionalColorKeyAnalyzer(device);
-            }
-            catch (Win32Exception)
-            {
-                return null;
-            }
+            foregroundBufferA?.Dispose();
+            foregroundBufferA = device.AllocateReadWriteBuffer<int>(pixelCount);
         }
+        return foregroundBufferA;
+    }
 
-        public int ClusterCount => clusterCount;
-
-        public Vector3 GetCenter(int cluster)
-            => new(centers[cluster * 3 + 0], centers[cluster * 3 + 1], centers[cluster * 3 + 2]);
-
-        public float GetLambda(int cluster) => lambdas[cluster];
-
-        public void CaptureSource(ComputeResourceBinding<ReadWriteTexture2D<Bgra32, Float4>> source, int width, int height)
+    private ReadWriteBuffer<int> EnsureForegroundBufferB()
+    {
+        if (foregroundBufferB is null || foregroundBufferB.Length < pixelCount)
         {
-            EnsureCapacity(width, height);
-
-            pipelineHost.CaptureSource(source, EnsureBgraBuffer(), width, height).Wait();
+            foregroundBufferB?.Dispose();
+            foregroundBufferB = device.AllocateReadWriteBuffer<int>(pixelCount);
         }
+        return foregroundBufferB;
+    }
 
-        // 元画素の差分検出。CPUへ読み戻すのは変化画素数の1要素だけとする。
-        public bool DetectSourceChange()
+    private void EnsureTables()
+    {
+        if (!pipelineHost.TryEnsureTables(
+                new DirectionalColorKeyTableResources.Plan(
+                    premultipliedLinearLength: PremultipliedLinearConstants.TableLength,
+                    srgbToLinearLength: SrgbTableLength),
+                out bool changed))
+            throw new InvalidOperationException();
+
+        if (changed)
+            pipelineHost.RecordTables();
+    }
+
+    private bool TryRunIncrementalSmooth(float sigmaColorSq)
+    {
+        var bgraGpu = EnsureBgraBuffer();
+        var countGpu = EnsureCountBuffer();
+
+        countGpu.CopyFrom(zeroCounts.AsSpan(0, 1));
+
+        pipelineHost.RecordChangeCount(bgraGpu.AsReadOnly(), countGpu, width, height);
+
+        countGpu.CopyTo(counts.AsSpan(0, 1));
+
+        if (counts[0] > (int)(pixelCount * IncrementalChangeCeiling))
+            return false;
+
+        pipelineHost.RecordRegionSmooth(
+            sigmaColorSq, AdoptReach, GuardReach, SmoothIterations, width, height);
+
+        return true;
+    }
+
+    private void InitializeCenters(int targetClusters, Vector3 whiteDirection)
+    {
+        Vector3 primary = Normalize(whiteDirection, new Vector3(1f, 0f, 0f));
+
+        if (!hasWarmStart || clusterCount != targetClusters)
         {
-            var bgraGpu = EnsureBgraBuffer();
-            var countGpu = EnsureCountBuffer();
-
-            countGpu.CopyFrom(zeroCounts.AsSpan(0, 1));
-
-            pipelineHost.RecordChangeCount(bgraGpu.AsReadOnly(), countGpu, width, height);
-
-            countGpu.CopyTo(counts.AsSpan(0, 1));
-
-            return counts[0] > 0;
-        }
-
-        public void WriteForegroundField(
-            ComputeResourceBinding<ReadWriteTexture2D<Bgra32, Float4>> destination,
-            int width,
-            int height,
-            Vector3 backgroundLab,
-            Vector3 backgroundSrgb)
-        {
-            var foreground = BuildForegroundFieldOnGpu(width, height, backgroundLab, backgroundSrgb);
-
-            pipelineHost.WriteForegroundField(destination, foreground.AsReadOnly(), width, height).Wait();
-        }
-
-        public void Analyze(
-            ReadOnlySpan<int> bgra,
-            int width,
-            int height,
-            Vector3 backgroundLab,
-            Vector3 whiteDirection,
-            int requestedClusters,
-            float noiseThreshold,
-            float sigmaColor,
-            DirectionalColorKeyScaleMode scaleMode,
-            float opaquePercentile,
-            float foregroundLambda,
-            Func<Vector3, float, float> physicalLambda,
-            bool resetLambdaSmoothing)
-        {
-            EnsureCapacity(width, height);
-
-            if (resetLambdaSmoothing)
-                hasLambdaWarmStart = false;
-
-            int targetClusters = Math.Clamp(requestedClusters, 1, MaxClusters);
-            int noiseThresholdBits = BitConverter.SingleToInt32Bits(noiseThreshold);
-            int sigmaColorBits = BitConverter.SingleToInt32Bits(sigmaColor);
-            int backgroundLabXBits = BitConverter.SingleToInt32Bits(backgroundLab.X);
-            int backgroundLabYBits = BitConverter.SingleToInt32Bits(backgroundLab.Y);
-            int backgroundLabZBits = BitConverter.SingleToInt32Bits(backgroundLab.Z);
-
-            var bgraGpu = EnsureBgraBuffer();
-
-            if (!bgra.IsEmpty)
-                bgraGpu.CopyFrom(bgra[..pixelCount]);
-
-            pipelineHost.RecordDisplacementField(
-                bgraGpu.AsReadOnly(),
-                backgroundLab.X, backgroundLab.Y, backgroundLab.Z,
-                noiseThreshold, width, height);
-
-            float sigmaColorSq = 2f * sigmaColor * sigmaColor;
-
-            bool canReuse = hasPreviousResult
-                && noiseThresholdBits == lastNoiseThresholdBits
-                && sigmaColorBits == lastSigmaColorBits
-                && backgroundLabXBits == lastBackgroundLabXBits
-                && backgroundLabYBits == lastBackgroundLabYBits
-                && backgroundLabZBits == lastBackgroundLabZBits;
-
-            if (!canReuse || !TryRunIncrementalSmooth(sigmaColorSq))
-                pipelineHost.RecordDirectionSmooth(sigmaColorSq, SmoothIterations, width, height);
-
-            pipelineHost.RecordPreviousSnapshot(bgraGpu.AsReadOnly(), SmoothIterations, width, height);
-            hasPreviousResult = true;
-            lastNoiseThresholdBits = noiseThresholdBits;
-            lastSigmaColorBits = sigmaColorBits;
-            lastBackgroundLabXBits = backgroundLabXBits;
-            lastBackgroundLabYBits = backgroundLabYBits;
-            lastBackgroundLabZBits = backgroundLabZBits;
-
-            InitializeCenters(targetClusters, whiteDirection);
-
-            var centerGpu = EnsureCenterBuffer();
-            var accumGpu = EnsureAccumBuffer();
-
-            int accumLength = clusterCount * 3 + clusterCount;
-
-            for (int iteration = 0; iteration < LloydIterations; iteration++)
-            {
-                centerGpu.CopyFrom(centers.AsSpan(0, clusterCount * 3));
-                accumGpu.CopyFrom(zeroAccumulators.AsSpan(0, accumLength));
-
-                pipelineHost.RecordClusterAssign(
-                    centerGpu, accumGpu, SmoothIterations, clusterCount, FixedPointScale, width, height);
-
-                accumGpu.CopyTo(accumulators.AsSpan(0, accumLength));
-
-                bool converged = UpdateCenters(whiteDirection);
-                if (converged)
-                    break;
-            }
-
-            ComputeLambdas(backgroundLab, scaleMode, opaquePercentile, foregroundLambda, physicalLambda);
-
-            if (hasLambdaWarmStart)
-            {
-                for (int c = 0; c < clusterCount; c++)
-                    lambdas[c] = prevLambdas[c] + (lambdas[c] - prevLambdas[c]) * LambdaSmoothingAlpha;
-            }
-            Array.Copy(lambdas, prevLambdas, clusterCount);
-            hasLambdaWarmStart = true;
-
-            hasWarmStart = true;
-        }
-
-        public ReadOnlySpan<int> BuildForegroundField(int width, int height, Vector3 backgroundLab, Vector3 backgroundSrgb)
-        {
-            var foregroundSource = BuildForegroundFieldOnGpu(width, height, backgroundLab, backgroundSrgb);
-
-            foregroundReadback ??= new int[pixelCount];
-            if (foregroundReadback.Length < pixelCount)
-                foregroundReadback = new int[pixelCount];
-
-            foregroundSource.CopyTo(foregroundReadback.AsSpan(0, pixelCount));
-            return foregroundReadback.AsSpan(0, pixelCount);
-        }
-
-        private ReadWriteBuffer<int> BuildForegroundFieldOnGpu(int width, int height, Vector3 backgroundLab, Vector3 backgroundSrgb)
-        {
-            EnsureCapacity(width, height);
-
-            float referencePerp = ComputeReferencePerp(backgroundLab);
-
-            var bgraGpu = EnsureBgraBuffer();
-            var foregroundSource = EnsureForegroundBufferA();
-            var foregroundTarget = EnsureForegroundBufferB();
-
-            pipelineHost.RecordForegroundField(
-                bgraGpu.AsReadOnly(), foregroundSource, foregroundTarget,
-                backgroundLab.X, backgroundLab.Y, backgroundLab.Z,
-                referencePerp,
-                backgroundSrgb.X, backgroundSrgb.Y, backgroundSrgb.Z,
-                LineSigmaSquared, PropagateIterations,
-                width, height);
-
-            return (PropagateIterations & 1) == 0 ? foregroundSource : foregroundTarget;
-        }
-
-        private static float ComputeReferencePerp(Vector3 backgroundLab)
-        {
-            float bgLenSq = Vector3.Dot(backgroundLab, backgroundLab);
-            if (bgLenSq <= 1e-8f)
-                return 0f;
-
-            var white = new Vector3(1f, 0f, 0f);
-            var dvec = white - backgroundLab;
-            float along = Vector3.Dot(dvec, backgroundLab) / bgLenSq;
-            var perp = dvec - along * backgroundLab;
-            return perp.Length();
-        }
-
-        private ReadWriteBuffer<int> EnsureForegroundBufferA()
-        {
-            if (foregroundBufferA is null || foregroundBufferA.Length < pixelCount)
-            {
-                foregroundBufferA?.Dispose();
-                foregroundBufferA = device.AllocateReadWriteBuffer<int>(pixelCount);
-            }
-            return foregroundBufferA;
-        }
-
-        private ReadWriteBuffer<int> EnsureForegroundBufferB()
-        {
-            if (foregroundBufferB is null || foregroundBufferB.Length < pixelCount)
-            {
-                foregroundBufferB?.Dispose();
-                foregroundBufferB = device.AllocateReadWriteBuffer<int>(pixelCount);
-            }
-            return foregroundBufferB;
-        }
-
-        private void EnsureTables()
-        {
-            if (!pipelineHost.TryEnsureTables(
-                    new DirectionalColorKeyTableResources.Plan(
-                        premultipliedLinearLength: PremultipliedLinearConstants.TableLength,
-                        srgbToLinearLength: SrgbTableLength),
-                    out bool changed))
-                throw new InvalidOperationException();
-
-            if (changed)
-                pipelineHost.RecordTables();
-        }
-
-        private bool TryRunIncrementalSmooth(float sigmaColorSq)
-        {
-            var bgraGpu = EnsureBgraBuffer();
-            var countGpu = EnsureCountBuffer();
-
-            countGpu.CopyFrom(zeroCounts.AsSpan(0, 1));
-
-            pipelineHost.RecordChangeCount(bgraGpu.AsReadOnly(), countGpu, width, height);
-
-            countGpu.CopyTo(counts.AsSpan(0, 1));
-
-            if (counts[0] > (int)(pixelCount * IncrementalChangeCeiling))
-                return false;
-
-            pipelineHost.RecordRegionSmooth(
-                sigmaColorSq, AdoptReach, GuardReach, SmoothIterations, width, height);
-
-            return true;
-        }
-
-        private void InitializeCenters(int targetClusters, Vector3 whiteDirection)
-        {
-            Vector3 primary = Normalize(whiteDirection, new Vector3(1f, 0f, 0f));
-
-            if (!hasWarmStart || clusterCount != targetClusters)
-            {
-                clusterCount = targetClusters;
-                hasLambdaWarmStart = false;
-                SetCenter(0, primary);
-
-                for (int c = 1; c < clusterCount; c++)
-                    SetCenter(c, PerturbedCenter(c, primary));
-
-                return;
-            }
+            clusterCount = targetClusters;
+            hasLambdaWarmStart = false;
+            SetCenter(0, primary);
 
             for (int c = 1; c < clusterCount; c++)
+                SetCenter(c, PerturbedCenter(c, primary));
+
+            return;
+        }
+
+        for (int c = 1; c < clusterCount; c++)
+        {
+            var current = GetCenter(c);
+            for (int other = 0; other < c; other++)
             {
-                var current = GetCenter(c);
-                for (int other = 0; other < c; other++)
+                if (Vector3.Dot(current, GetCenter(other)) > ConvergenceDot)
                 {
-                    if (Vector3.Dot(current, GetCenter(other)) > ConvergenceDot)
-                    {
-                        SetCenter(c, PerturbedCenter(c, primary));
-                        break;
-                    }
+                    SetCenter(c, PerturbedCenter(c, primary));
+                    break;
                 }
             }
         }
+    }
 
-        private Vector3 PerturbedCenter(int cluster, Vector3 primary)
+    private Vector3 PerturbedCenter(int cluster, Vector3 primary)
+    {
+        float angle = MathF.PI * cluster / clusterCount;
+        return Normalize(new Vector3(
+            primary.X,
+            primary.Y * MathF.Cos(angle) - primary.Z * MathF.Sin(angle),
+            primary.Y * MathF.Sin(angle) + primary.Z * MathF.Cos(angle)), primary);
+    }
+
+    private bool UpdateCenters(Vector3 whiteDirection)
+    {
+        bool converged = true;
+        Vector3 fallback = Normalize(whiteDirection, new Vector3(1f, 0f, 0f));
+        int countBase = clusterCount * 3;
+
+        for (int c = 0; c < clusterCount; c++)
         {
-            float angle = MathF.PI * cluster / clusterCount;
-            return Normalize(new Vector3(
-                primary.X,
-                primary.Y * MathF.Cos(angle) - primary.Z * MathF.Sin(angle),
-                primary.Y * MathF.Sin(angle) + primary.Z * MathF.Cos(angle)), primary);
+            if (accumulators[countBase + c] == 0)
+            {
+                SetCenter(c, fallback);
+                converged = false;
+                continue;
+            }
+
+            var accumulated = new Vector3(
+                accumulators[c * 3 + 0] / FixedPointScale,
+                accumulators[c * 3 + 1] / FixedPointScale,
+                accumulators[c * 3 + 2] / FixedPointScale);
+
+            var previous = GetCenter(c);
+            var updated = Normalize(accumulated, previous);
+            SetCenter(c, updated);
+
+            if (Vector3.Dot(updated, previous) < ConvergenceDot)
+                converged = false;
         }
 
-        private bool UpdateCenters(Vector3 whiteDirection)
-        {
-            bool converged = true;
-            Vector3 fallback = Normalize(whiteDirection, new Vector3(1f, 0f, 0f));
-            int countBase = clusterCount * 3;
+        return converged;
+    }
 
+    private void ComputeLambdas(
+        Vector3 backgroundLab,
+        DirectionalColorKeyScaleMode scaleMode,
+        float opaquePercentile,
+        float foregroundLambda,
+        Func<Vector3, float, float> physicalLambda)
+    {
+        if (scaleMode == DirectionalColorKeyScaleMode.Foreground)
+        {
             for (int c = 0; c < clusterCount; c++)
-            {
-                if (accumulators[countBase + c] == 0)
-                {
-                    SetCenter(c, fallback);
-                    converged = false;
-                    continue;
-                }
-
-                var accumulated = new Vector3(
-                    accumulators[c * 3 + 0] / FixedPointScale,
-                    accumulators[c * 3 + 1] / FixedPointScale,
-                    accumulators[c * 3 + 2] / FixedPointScale);
-
-                var previous = GetCenter(c);
-                var updated = Normalize(accumulated, previous);
-                SetCenter(c, updated);
-
-                if (Vector3.Dot(updated, previous) < ConvergenceDot)
-                    converged = false;
-            }
-
-            return converged;
+                lambdas[c] = MathF.Max(foregroundLambda, 1e-5f);
+            return;
         }
 
-        private void ComputeLambdas(
-            Vector3 backgroundLab,
-            DirectionalColorKeyScaleMode scaleMode,
-            float opaquePercentile,
-            float foregroundLambda,
-            Func<Vector3, float, float> physicalLambda)
+        if (scaleMode == DirectionalColorKeyScaleMode.Physical)
         {
-            if (scaleMode == DirectionalColorKeyScaleMode.Foreground)
-            {
-                for (int c = 0; c < clusterCount; c++)
-                    lambdas[c] = MathF.Max(foregroundLambda, 1e-5f);
-                return;
-            }
-
-            if (scaleMode == DirectionalColorKeyScaleMode.Physical)
-            {
-                for (int c = 0; c < clusterCount; c++)
-                    lambdas[c] = physicalLambda(GetCenter(c), 1e-5f);
-                return;
-            }
-
-            var centerGpu = EnsureCenterBuffer();
-            var histogramGpu = EnsureHistogramBuffer();
-
-            centerGpu.CopyFrom(centers.AsSpan(0, clusterCount * 3));
-            histogramGpu.CopyFrom(zeroHistogram.AsSpan(0, clusterCount * ProjectionBins));
-
-            float projectionScale = ProjectionBins / ProjectionHistogramRange;
-
-            pipelineHost.RecordProjectionHistogram(
-                centerGpu, histogramGpu, SmoothIterations,
-                backgroundLab.X, backgroundLab.Y, backgroundLab.Z,
-                clusterCount, ProjectionBins, projectionScale, width, height);
-
-            histogramGpu.CopyTo(histogram.AsSpan(0, clusterCount * ProjectionBins));
-
-            float fraction = Math.Clamp(opaquePercentile, 0f, 1f);
-
             for (int c = 0; c < clusterCount; c++)
-            {
-                int baseIndex = c * ProjectionBins;
-                long total = 0;
-                for (int b = 0; b < ProjectionBins; b++)
-                    total += histogram[baseIndex + b];
+                lambdas[c] = physicalLambda(GetCenter(c), 1e-5f);
+            return;
+        }
 
-                if (total == 0)
+        var centerGpu = EnsureCenterBuffer();
+        var histogramGpu = EnsureHistogramBuffer();
+
+        centerGpu.CopyFrom(centers.AsSpan(0, clusterCount * 3));
+        histogramGpu.CopyFrom(zeroHistogram.AsSpan(0, clusterCount * ProjectionBins));
+
+        float projectionScale = ProjectionBins / ProjectionHistogramRange;
+
+        pipelineHost.RecordProjectionHistogram(
+            centerGpu, histogramGpu, SmoothIterations,
+            backgroundLab.X, backgroundLab.Y, backgroundLab.Z,
+            clusterCount, ProjectionBins, projectionScale, width, height);
+
+        histogramGpu.CopyTo(histogram.AsSpan(0, clusterCount * ProjectionBins));
+
+        float fraction = Math.Clamp(opaquePercentile, 0f, 1f);
+
+        for (int c = 0; c < clusterCount; c++)
+        {
+            int baseIndex = c * ProjectionBins;
+            long total = 0;
+            for (int b = 0; b < ProjectionBins; b++)
+                total += histogram[baseIndex + b];
+
+            if (total == 0)
+            {
+                lambdas[c] = physicalLambda(GetCenter(c), 1e-5f);
+                continue;
+            }
+
+            long target = (long)(total * fraction);
+            long cumulative = 0;
+            int selectedBin = ProjectionBins - 1;
+            for (int b = 0; b < ProjectionBins; b++)
+            {
+                cumulative += histogram[baseIndex + b];
+                if (cumulative >= target)
                 {
-                    lambdas[c] = physicalLambda(GetCenter(c), 1e-5f);
-                    continue;
+                    selectedBin = b;
+                    break;
                 }
-
-                long target = (long)(total * fraction);
-                long cumulative = 0;
-                int selectedBin = ProjectionBins - 1;
-                for (int b = 0; b < ProjectionBins; b++)
-                {
-                    cumulative += histogram[baseIndex + b];
-                    if (cumulative >= target)
-                    {
-                        selectedBin = b;
-                        break;
-                    }
-                }
-
-                float projValue = (selectedBin + 0.5f) / projectionScale;
-                lambdas[c] = MathF.Max(projValue, 1e-5f);
-            }
-        }
-
-        private void SetCenter(int cluster, Vector3 value)
-        {
-            centers[cluster * 3 + 0] = value.X;
-            centers[cluster * 3 + 1] = value.Y;
-            centers[cluster * 3 + 2] = value.Z;
-        }
-
-        private static Vector3 Normalize(Vector3 value, Vector3 fallback)
-        {
-            float length = value.Length();
-            return length > 1e-6f ? value / length : fallback;
-        }
-
-        private void EnsureCapacity(int width, int height)
-        {
-            if (this.width != width || this.height != height)
-            {
-                this.width = width;
-                this.height = height;
-                pixelCount = width * height;
-
-                DisposeFrameBuffers();
             }
 
-            if (!pipelineHost.TryEnsureFrame(
-                    new DirectionalColorKeyFrameResources.Plan(
-                        adoptMaskLength: pixelCount,
-                        colorLabLength: pixelCount * 3,
-                        computeMaskLength: pixelCount,
-                        dilateScratchLength: pixelCount,
-                        directionsALength: pixelCount * 3,
-                        directionsBLength: pixelCount * 3,
-                        previousBgraLength: pixelCount,
-                        previousResultLength: pixelCount * 3,
-                        seedMaskLength: pixelCount),
-                    out bool changed))
-                throw new InvalidOperationException();
-
-            if (changed)
-                hasPreviousResult = false;
-
-            EnsureTables();
+            float projValue = (selectedBin + 0.5f) / projectionScale;
+            lambdas[c] = MathF.Max(projValue, 1e-5f);
         }
+    }
 
-        private ReadWriteBuffer<int> EnsureBgraBuffer()
+    private void SetCenter(int cluster, Vector3 value)
+    {
+        centers[cluster * 3 + 0] = value.X;
+        centers[cluster * 3 + 1] = value.Y;
+        centers[cluster * 3 + 2] = value.Z;
+    }
+
+    private static Vector3 Normalize(Vector3 value, Vector3 fallback)
+    {
+        float length = value.Length();
+        return length > 1e-6f ? value / length : fallback;
+    }
+
+    private void EnsureCapacity(int width, int height)
+    {
+        if (this.width != width || this.height != height)
         {
-            if (bgraBuffer is null || bgraBuffer.Length < pixelCount)
-            {
-                bgraBuffer?.Dispose();
-                bgraBuffer = device.AllocateReadWriteBuffer<int>(pixelCount);
-            }
-            return bgraBuffer;
+            this.width = width;
+            this.height = height;
+            pixelCount = width * height;
+
+            DisposeFrameBuffers();
         }
 
-        private ReadOnlyBuffer<float> EnsureCenterBuffer()
-        {
-            centerBuffer ??= device.AllocateReadOnlyBuffer<float>(MaxClusters * 3);
-            return centerBuffer;
-        }
+        if (!pipelineHost.TryEnsureFrame(
+                new DirectionalColorKeyFrameResources.Plan(
+                    adoptMaskLength: pixelCount,
+                    colorLabLength: pixelCount * 3,
+                    computeMaskLength: pixelCount,
+                    dilateScratchLength: pixelCount,
+                    directionsALength: pixelCount * 3,
+                    directionsBLength: pixelCount * 3,
+                    previousBgraLength: pixelCount,
+                    previousResultLength: pixelCount * 3,
+                    seedMaskLength: pixelCount),
+                out bool changed))
+            throw new InvalidOperationException();
 
-        private ReadWriteBuffer<int> EnsureAccumBuffer()
-        {
-            accumBuffer ??= device.AllocateReadWriteBuffer<int>(MaxClusters * 3 + MaxClusters);
-            return accumBuffer;
-        }
+        if (changed)
+            hasPreviousResult = false;
 
-        private ReadWriteBuffer<int> EnsureCountBuffer()
-        {
-            countBuffer ??= device.AllocateReadWriteBuffer<int>(MaxClusters);
-            return countBuffer;
-        }
+        EnsureTables();
+    }
 
-        private ReadWriteBuffer<int> EnsureHistogramBuffer()
-        {
-            histogramBuffer ??= device.AllocateReadWriteBuffer<int>(MaxClusters * ProjectionBins);
-            return histogramBuffer;
-        }
-
-        private void DisposeFrameBuffers()
+    private ReadWriteBuffer<int> EnsureBgraBuffer()
+    {
+        if (bgraBuffer is null || bgraBuffer.Length < pixelCount)
         {
             bgraBuffer?.Dispose();
-            foregroundBufferA?.Dispose();
-            foregroundBufferB?.Dispose();
-            bgraBuffer = null;
-            foregroundBufferA = null;
-            foregroundBufferB = null;
+            bgraBuffer = device.AllocateReadWriteBuffer<int>(pixelCount);
         }
+        return bgraBuffer;
+    }
 
-        public void Dispose()
-        {
-            pipelineHost.Dispose();
-            pipelineHost.WaitForDisposal();
-            DisposeFrameBuffers();
-            centerBuffer?.Dispose();
-            accumBuffer?.Dispose();
-            countBuffer?.Dispose();
-            histogramBuffer?.Dispose();
-            centerBuffer = null;
-            accumBuffer = null;
-            countBuffer = null;
-            histogramBuffer = null;
-        }
+    private ReadOnlyBuffer<float> EnsureCenterBuffer()
+    {
+        centerBuffer ??= device.AllocateReadOnlyBuffer<float>(MaxClusters * 3);
+        return centerBuffer;
+    }
+
+    private ReadWriteBuffer<int> EnsureAccumBuffer()
+    {
+        accumBuffer ??= device.AllocateReadWriteBuffer<int>(MaxClusters * 3 + MaxClusters);
+        return accumBuffer;
+    }
+
+    private ReadWriteBuffer<int> EnsureCountBuffer()
+    {
+        countBuffer ??= device.AllocateReadWriteBuffer<int>(MaxClusters);
+        return countBuffer;
+    }
+
+    private ReadWriteBuffer<int> EnsureHistogramBuffer()
+    {
+        histogramBuffer ??= device.AllocateReadWriteBuffer<int>(MaxClusters * ProjectionBins);
+        return histogramBuffer;
+    }
+
+    private void DisposeFrameBuffers()
+    {
+        bgraBuffer?.Dispose();
+        foregroundBufferA?.Dispose();
+        foregroundBufferB?.Dispose();
+        bgraBuffer = null;
+        foregroundBufferA = null;
+        foregroundBufferB = null;
+    }
+
+    public void Dispose()
+    {
+        pipelineHost.Dispose();
+        pipelineHost.WaitForDisposal();
+        DisposeFrameBuffers();
+        centerBuffer?.Dispose();
+        accumBuffer?.Dispose();
+        countBuffer?.Dispose();
+        histogramBuffer?.Dispose();
+        centerBuffer = null;
+        accumBuffer = null;
+        countBuffer = null;
+        histogramBuffer = null;
     }
 }

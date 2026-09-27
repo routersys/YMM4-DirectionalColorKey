@@ -12,8 +12,8 @@ using YukkuriMovieMaker.Player.Video.Effects;
 using Color = System.Windows.Media.Color;
 using PixelFormat = Vortice.DCommon.PixelFormat;
 
-namespace DirectionalColorKey
-{
+namespace DirectionalColorKey;
+
 	internal sealed class DirectionalColorKeyEffectProcessor : VideoEffectProcessorBase
 	{
 		private static readonly Vector3 WhiteLab = new(1f, 0f, 0f);
@@ -663,4 +663,3 @@ namespace DirectionalColorKey
 				-0.0041960863f * l - 0.7034186147f * m + 1.7076147010f * s);
 		}
 	}
-}

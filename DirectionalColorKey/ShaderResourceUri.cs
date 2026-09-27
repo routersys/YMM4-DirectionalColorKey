@@ -4,10 +4,9 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace DirectionalColorKey
+namespace DirectionalColorKey;
+
+internal class ShaderResourceUri
 {
-    internal class ShaderResourceUri
-    {
-        public static Uri Get(string shaderName) => new Uri($"pack://application:,,,/DirectionalColorKey;component/Resources/Shader/{shaderName}.cso", UriKind.Absolute);
-    }
+    public static Uri Get(string shaderName) => new Uri($"pack://application:,,,/DirectionalColorKey;component/Resources/Shader/{shaderName}.cso", UriKind.Absolute);
 }
