@@ -301,7 +301,7 @@ internal sealed class DirectionalColorKeyEffectProcessor : VideoEffectProcessorB
                 (keyDirection, floorValue) => ComputePhysicalLambda(backgroundLab, keyDirection, floorValue),
                 lambdaInputsChanged);
 
-            ApplyClusters(analyzer, backgroundLab);
+            ApplyClusters(analyzer);
 
             var backgroundSrgb = new Vector3(
                 currentBackground.R / 255f,
@@ -360,7 +360,7 @@ internal sealed class DirectionalColorKeyEffectProcessor : VideoEffectProcessorB
         return effectDescription.DrawDescription;
     }
 
-    private void ApplyClusters(DirectionalColorKeyAnalyzer analyzer, Vector3 backgroundLab)
+    private void ApplyClusters(DirectionalColorKeyAnalyzer analyzer)
     {
         if (effect is null)
             return;
