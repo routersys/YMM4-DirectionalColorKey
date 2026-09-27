@@ -3,7 +3,6 @@ using System.Numerics;
 using Vortice;
 using Vortice.Direct2D1;
 using Vortice.Direct2D1.Effects;
-using Vortice.DCommon;
 using Vortice.DXGI;
 using Vortice.Mathematics;
 using YukkuriMovieMaker.Commons;
