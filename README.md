@@ -256,4 +256,4 @@ YukkuriMovieMaker4（YMM4）上で動作する、背景色から各画素の色�
 
 [LGPL-3.0 License](LICENSE.txt)
 
-ライセンスの全文は、リポジトリの `LICENSE.txt` と、配布パッケージの `LICENSE` フォルダーに収録しています。
+ライセンスの全文は、リポジトリの `LICENSE.txt` と、配布パッケージの `LICENSE` フォルダーに収録しています。LGPL 3.0が組み込むGNU General Public License v3.0の全文も、リポジトリの `.github/LICENSE/GPL-3.0.txt` と、配布パッケージの `LICENSE` フォルダーに収録しています。
