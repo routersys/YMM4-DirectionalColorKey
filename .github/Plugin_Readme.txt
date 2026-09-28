@@ -194,4 +194,6 @@ Oklab色空間で調べ、前景のアルファと色を推定して背景を透
   https://github.com/routersys/YMM4-DirectionalColorKey
   ライセンスの全文は同梱のLICENSEフォルダーに収録しています。
   LGPL 3.0が組み込むGNU General Public License v3.0の全文も収録しています。
+  本プラグインにはmanju_summoner氏による修正が含まれており、同氏による
+  修正の著作権は同氏にあります。
 ========================================
